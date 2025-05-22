@@ -1,0 +1,127 @@
+pipeline {
+    agent any
+
+    environment {
+        TOKEN = credentials('openshift-token')   // Use Jenkins credentials binding
+        OPENSHIFT_API = 'https://api.your.openshift.cluster'
+        PROJECT = 'testsp'
+        APP_NAME = 'c-w-tomcat'
+        IMAGE_NAME = "${APP_NAME}-image"
+        CRYPTO_FILE = 'core24KonfigAndCopy/properties/crypto.txt'
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timestamps()
+        ansiColor('xterm')
+        timeout(time: 15, unit: 'MINUTES')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                echo "🔄 Checking out source code..."
+                checkout scm
+            }
+        }
+
+        stage('Pre-checks') {
+            steps {
+                script {
+                    if (!fileExists(env.CRYPTO_FILE)) {
+                        error("❌ Crypto file not found at ${env.CRYPTO_FILE}")
+                    }
+                }
+            }
+        }
+
+        stage('Login to OpenShift') {
+            steps {
+                script {
+                    echo "🔐 Logging in to OpenShift..."
+                    sh """
+                        oc logout || true
+                        oc login --token="$TOKEN" --server="$OPENSHIFT_API" --insecure-skip-tls-verify=true
+                    """
+                }
+            }
+        }
+
+        stage('Select Project') {
+            steps {
+                sh "oc project $PROJECT"
+            }
+        }
+
+        stage('Create/Update ConfigMap') {
+            steps {
+                sh """
+                    echo '📦 Creating/Updating ConfigMap...'
+                    oc create configmap crypto-config --from-file=crypto.txt=${CRYPTO_FILE} --dry-run=client -o yaml | oc apply -f -
+                """
+            }
+        }
+
+        stage('Ensure BuildConfig') {
+            steps {
+                script {
+                    def bcExists = sh(script: "oc get bc/${IMAGE_NAME} > /dev/null 2>&1", returnStatus: true) == 0
+                    if (!bcExists) {
+                        echo "🛠 Creating binary BuildConfig..."
+                        sh "oc new-build --name=${IMAGE_NAME} --binary --strategy=docker"
+                    } else {
+                        echo "✅ BuildConfig exists"
+                    }
+                }
+            }
+        }
+
+        stage('Start Build') {
+            steps {
+                echo "📦 Starting build from workspace..."
+                sh "oc start-build ${IMAGE_NAME} --from-dir=. --follow"
+            }
+        }
+
+        stage('Deploy Application') {
+            steps {
+                script {
+                    echo "🚀 Applying DeploymentConfig and related resources..."
+                    sh "envsubst < DD-deploy.yaml | oc apply -f -"
+                }
+            }
+        }
+
+        stage('Monitor Rollout') {
+            steps {
+                echo "⏳ Waiting for rollout to finish..."
+                sh "oc rollout status dc/${APP_NAME}"
+            }
+        }
+
+        stage('Expose Route') {
+            steps {
+                script {
+                    def route = sh(
+                        script: "oc get route ${APP_NAME} -o jsonpath='{.spec.host}'",
+                        returnStdout: true
+                    ).trim()
+                    echo "✅ Application is live at: http://${route}"
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo "❌ Pipeline failed. Please check logs above for errors."
+        }
+        success {
+            echo "✅ Pipeline completed successfully!"
+        }
+        always {
+            echo "🧹 Cleaning up session..."
+            sh "oc logout || true"
+        }
+    }
+}
