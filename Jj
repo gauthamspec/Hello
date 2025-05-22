@@ -1,0 +1,141 @@
+pipeline {
+    agent any
+
+    environment {
+        APP_NAME       = "my-tomcat-app"
+        IMAGE_STREAM   = "${APP_NAME}-image"
+        IMAGE_TAG      = "latest"
+        PROJECT        = "myproject"    // 🔁 Replace with your OpenShift project name
+        IMAGE_NAME     = "image-registry.openshift-image-registry.svc:5000/${PROJECT}/${IMAGE_STREAM}:${IMAGE_TAG}"
+        DOCKER_IMG     = "${APP_NAME}:temp"
+        OPENSHIFT_API  = "https://your-openshift-api:6443" // 🔁 Replace with your OpenShift cluster API
+    }
+
+    options {
+        timestamps()
+    }
+
+    stages {
+        stage('Login to OpenShift') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'openshift-login', usernameVariable: 'OCP_USER', passwordVariable: 'OCP_PASS')]) {
+                    script {
+                        echo "🔐 Logging into OpenShift as ${OCP_USER}"
+                        sh "oc login ${OPENSHIFT_API} --username=${OCP_USER} --password=${OCP_PASS} --insecure-skip-tls-verify=true"
+                        sh "oc project ${PROJECT}"
+                    }
+                }
+            }
+        }
+
+        stage('Checkout Source') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    echo "🐳 Building Docker image"
+                    sh "docker build -t ${DOCKER_IMG} ."
+                }
+            }
+        }
+
+        stage('Push Image to OpenShift Registry') {
+            steps {
+                script {
+                    echo "🔐 Logging into OpenShift internal registry"
+                    def token = sh(script: "oc whoami -t", returnStdout: true).trim()
+                    sh "docker login -u $(oc whoami) -p ${token} image-registry.openshift-image-registry.svc:5000"
+
+                    echo "🏷️ Tagging image"
+                    sh "docker tag ${DOCKER_IMG} ${IMAGE_NAME}"
+
+                    echo "📤 Pushing image"
+                    sh "docker push ${IMAGE_NAME}"
+                }
+            }
+        }
+
+        stage('Deploy to OpenShift') {
+            steps {
+                script {
+                    echo "🚀 Applying DeploymentConfig"
+                    sh """
+cat <<EOF | oc apply -f -
+apiVersion: apps.openshift.io/v1
+kind: DeploymentConfig
+metadata:
+  name: ${APP_NAME}
+spec:
+  replicas: 1
+  selector:
+    app: ${APP_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${APP_NAME}
+    spec:
+      containers:
+      - name: tomcat
+        image: ${IMAGE_NAME}
+        ports:
+        - containerPort: 8080
+        env:
+        - name: CRYPTO_FILE_PATH
+          value: "/usr/local/tomcat/properties/crypto.txt"
+        securityContext:
+          runAsUser: 1001
+  triggers:
+  - type: ConfigChange
+  - type: ImageChange
+    imageChangeParams:
+      automatic: true
+      containerNames:
+      - tomcat
+      from:
+        kind: ImageStreamTag
+        name: ${IMAGE_STREAM}:${IMAGE_TAG}
+EOF
+                    """
+                }
+            }
+        }
+
+        stage('Expose Service and Route') {
+            steps {
+                script {
+                    echo "🔗 Exposing service and route"
+                    sh """
+                    oc get svc ${APP_NAME} || oc expose dc/${APP_NAME} --port=8080
+                    oc get route ${APP_NAME} || oc expose svc/${APP_NAME}
+                    """
+                }
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    echo "📋 Checking deployment status"
+                    sh "oc get pods -l app=${APP_NAME}"
+                    sh "oc get route ${APP_NAME} -o wide"
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                def url = sh(script: "oc get route ${APP_NAME} -o jsonpath='{.spec.host}'", returnStdout: true).trim()
+                echo "✅ Application deployed at: http://${url}"
+            }
+        }
+        failure {
+            echo "❌ Deployment failed. Please check logs and OpenShift events."
+        }
+    }
+}
