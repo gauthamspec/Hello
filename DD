@@ -1,0 +1,136 @@
+#!/bin/bash
+
+# === CONFIGURATION ===
+TOKEN=""
+OPENSHIFT_API=""
+PROJECT="testsp"
+APP_NAME="c-w-tomcat"
+IMAGE_NAME="${APP_NAME}-image"
+CRYPTO_FILE_PATH="./core24KonfigAndCopy//properties/crypto.txt"
+
+# === LOGIN WITH TOKEN ===
+echo "🔐 Logging into OpenShift..."
+/home/jenkins/os/oc login --token="$TOKEN" --server="$OPENSHIFT_API" --insecure-skip-tls-verify=true || {
+  echo "❌ Login failed"; exit 1;
+}
+
+# === SELECT PROJECT ===
+echo "🔄 Switching to project $PROJECT..."
+/home/jenkins/os/oc project "$PROJECT" || {
+  echo "❌ Failed to switch project"; exit 1;
+}
+
+# === CREATE OR UPDATE CONFIGMAP ===
+echo "📦 Creating configmap from crypto.txt..."
+/home/jenkins/os/oc create configmap crypto-config --from-file=crypto.txt="$CRYPTO_FILE_PATH" --dry-run=client -o yaml | /home/jenkins/os/oc apply -f - || {
+  echo "❌ Failed to create configmap"; exit 1;
+}
+
+# === CREATE NEW BUILD CONFIG IF NOT EXISTS ===
+if ! /home/jenkins/os/oc get bc/"$IMAGE_NAME" >/dev/null 2>&1; then
+  echo "🛠 Creating new binary build config for $IMAGE_NAME..."
+  /home/jenkins/os/oc new-build --name="$IMAGE_NAME" --binary --strategy=docker || {
+    echo "❌ Failed to create new-build"; exit 1;
+  }
+else
+  echo "✅ BuildConfig already exists"
+fi
+
+# === START BUILD ===
+echo "📦 Starting build from current directory (Dockerfile + WAR)..."
+/home/jenkins/os/oc start-build "$IMAGE_NAME" --from-dir=. --follow || {
+  echo "❌ Build failed"; exit 1;
+}
+
+# === DEPLOYMENT YAML ===
+echo "🚀 Deploying application..."
+
+cat <<EOF | /home/jenkins/os/oc apply -f -
+apiVersion: apps.openshift.io/v1
+kind: DeploymentConfig
+metadata:
+  name: ${APP_NAME}
+  labels:
+    app: ${APP_NAME}
+spec:
+  replicas: 1
+  selector:
+    app: ${APP_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${APP_NAME}
+    spec:
+      containers:
+      - name: tomcat
+        image: ''
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+        env:
+        - name: CRYPTO_FILE_PATH
+          value: "/usr/local/tomcat/properties/crypto.txt"
+        - name: KOR_CRYPT_VALUES_PATH
+          value: "/usr/local/tomcat/properties/crypto.txt"
+        - name: JAVA_OPTS
+          value: "-Dcrypto.file.path=/usr/local/tomcat/properties/crypto.txt"
+        volumeMounts:
+        - name: crypto-volume
+          mountPath: /usr/local/tomcat/properties/
+        - name: config-volume
+          mountpath: //usr/local/tomcat//conf/
+      volumes:
+      - name: crypto-volume
+        configMap:
+          name: crypto-config
+      - name: config-volume
+        configMap:
+         name: my-app-config
+
+  triggers:
+  - type: ConfigChange
+  - type: ImageChange
+    imageChangeParams:
+      automatic: true
+      containerNames:
+      - tomcat
+      from:
+        kind: ImageStreamTag
+        name: ${IMAGE_NAME}:latest
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${APP_NAME}
+spec:
+  selector:
+    app: ${APP_NAME}
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ${APP_NAME}
+spec:
+  to:
+    kind: Service
+    name: ${APP_NAME}
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+EOF
+
+# === ROLLOUT STATUS ===
+echo "⏳ Waiting for deployment rollout..."
+/home/jenkins/os/oc rollout status dc/${APP_NAME} || {
+  echo "⚠️ Rollout failed or timeout"; exit 1;
+}
+
+# === DISPLAY ROUTE ===
+ROUTE=$(/home/jenkins/os/oc get route ${APP_NAME} -o jsonpath='{.spec.host}')
+echo "✅ Application is available at: http://${ROUTE}"
