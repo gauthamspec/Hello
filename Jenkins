@@ -1,0 +1,151 @@
+pipeline {
+    agent any
+
+    environment {
+        APP_NAME       = "my-tomcat-app"
+        IMAGE_STREAM   = "${APP_NAME}-image"
+        BUILD_CONFIG   = "${APP_NAME}-build"
+        PROJECT        = "myproject"         // Change to your OpenShift project
+        SOURCE_DIR     = "."                // Assuming Dockerfile and ROOT.war are in root
+    }
+
+    stages {
+        stage('Login & Set Project') {
+            steps {
+                script {
+                    echo "🔐 Logging into OpenShift and setting project"
+                    sh 'oc whoami || exit 1'
+                    sh "oc project ${env.PROJECT}"
+                }
+            }
+        }
+
+        stage('Create ImageStream') {
+            steps {
+                script {
+                    echo "📦 Ensuring ImageStream exists"
+                    sh """
+                        oc get is ${IMAGE_STREAM} || oc create is ${IMAGE_STREAM}
+                    """
+                }
+            }
+        }
+
+        stage('Create BuildConfig') {
+            steps {
+                script {
+                    echo "🛠️ Creating or updating BuildConfig"
+                    sh """
+                        oc get bc ${BUILD_CONFIG} || \
+                        oc new-build --name=${BUILD_CONFIG} --binary --to=${IMAGE_STREAM}:latest
+                    """
+                }
+            }
+        }
+
+        stage('Start Binary Build') {
+            steps {
+                script {
+                    echo "🚀 Starting build from ${SOURCE_DIR}"
+                    sh "oc start-build ${BUILD_CONFIG} --from-dir=${SOURCE_DIR} --follow"
+                }
+            }
+        }
+
+        stage('Deploy Application') {
+            steps {
+                script {
+                    echo "🚧 Applying DeploymentConfig, Service, and Route"
+                    sh """
+                    cat <<EOF | oc apply -f -
+apiVersion: apps.openshift.io/v1
+kind: DeploymentConfig
+metadata:
+  name: ${APP_NAME}
+  labels:
+    app: ${APP_NAME}
+spec:
+  replicas: 1
+  selector:
+    app: ${APP_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${APP_NAME}
+    spec:
+      containers:
+        - name: tomcat
+          image: image-registry.openshift-image-registry.svc:5000/${PROJECT}/${IMAGE_STREAM}:latest
+          ports:
+            - containerPort: 8080
+          securityContext:
+            runAsUser: 1001
+  triggers:
+    - type: ConfigChange
+    - type: ImageChange
+      imageChangeParams:
+        automatic: true
+        containerNames:
+          - tomcat
+        from:
+          kind: ImageStreamTag
+          name: ${IMAGE_STREAM}:latest
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${APP_NAME}
+spec:
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+  selector:
+    app: ${APP_NAME}
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: ${APP_NAME}
+spec:
+  to:
+    kind: Service
+    name: ${APP_NAME}
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+EOF
+                    """
+                }
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    echo "✅ Verifying pods and route"
+                    sh "oc get pods -l app=${APP_NAME}"
+                    sh "oc get route ${APP_NAME}"
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                echo "🎉 SUCCESS: ${APP_NAME} is deployed"
+                sh "oc get route ${APP_NAME} -o jsonpath='{.spec.host}'"
+            }
+        }
+        failure {
+            script {
+                echo "❌ ERROR: Build or deploy failed"
+            }
+        }
+        always {
+            echo "📦 Cleanup or logging steps can be added here."
+        }
+    }
+}
