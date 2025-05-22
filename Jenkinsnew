@@ -1,0 +1,206 @@
+pipeline {
+    agent any
+
+    environment {
+        TOKEN = credentials('openshift-token')     // Jenkins credential ID
+        OPENSHIFT_API = 'https://api.your.openshift.cluster'
+        PROJECT = 'testsp'
+        APP_NAME = 'c-w-tomcat'
+        IMAGE_NAME = "${APP_NAME}-image"
+        CRYPTO_FILE = 'core24KonfigAndCopy/properties/crypto.txt'
+    }
+
+    options {
+        timestamps()
+        ansiColor('xterm')
+        timeout(time: 20, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                echo "🔄 Checking out source..."
+                checkout scm
+            }
+        }
+
+        stage('Pre-checks') {
+            steps {
+                script {
+                    if (!fileExists(env.CRYPTO_FILE)) {
+                        error("❌ Crypto file not found: ${env.CRYPTO_FILE}")
+                    }
+                }
+            }
+        }
+
+        stage('Login to OpenShift') {
+            steps {
+                echo "🔐 Logging into OpenShift..."
+                sh '''
+                    oc logout || true
+                    oc login --token=$TOKEN --server=$OPENSHIFT_API --insecure-skip-tls-verify=true
+                '''
+            }
+        }
+
+        stage('Select Project') {
+            steps {
+                sh "oc project $PROJECT"
+            }
+        }
+
+        stage('Create/Update ConfigMap') {
+            steps {
+                echo "📦 Creating/Updating ConfigMap..."
+                sh '''
+                    oc create configmap crypto-config --from-file=crypto.txt=${CRYPTO_FILE} --dry-run=client -o yaml | oc apply -f -
+                '''
+            }
+        }
+
+        stage('Create BuildConfig If Missing') {
+            steps {
+                script {
+                    def exists = sh(script: "oc get bc/${IMAGE_NAME}", returnStatus: true) == 0
+                    if (!exists) {
+                        echo "🛠 Creating BuildConfig..."
+                        sh "oc new-build --name=${IMAGE_NAME} --binary --strategy=docker"
+                    } else {
+                        echo "✅ BuildConfig already exists."
+                    }
+                }
+            }
+        }
+
+        stage('Start Build') {
+            steps {
+                echo "📦 Starting WAR build..."
+                sh "oc start-build ${IMAGE_NAME} --from-dir=. --follow"
+            }
+        }
+
+        stage('Deploy to OpenShift') {
+            steps {
+                echo "🚀 Applying DeploymentConfig, Service, and Route..."
+                script {
+                    def yaml = """
+                    apiVersion: apps.openshift.io/v1
+                    kind: DeploymentConfig
+                    metadata:
+                      name: ${APP_NAME}
+                      labels:
+                        app: ${APP_NAME}
+                    spec:
+                      replicas: 1
+                      selector:
+                        app: ${APP_NAME}
+                      template:
+                        metadata:
+                          labels:
+                            app: ${APP_NAME}
+                        spec:
+                          containers:
+                          - name: tomcat
+                            image: ''
+                            imagePullPolicy: Always
+                            ports:
+                              - containerPort: 8080
+                            env:
+                              - name: CRYPTO_FILE_PATH
+                                value: "/usr/local/tomcat/properties/crypto.txt"
+                              - name: KOR_CRYPT_VALUES_PATH
+                                value: "/usr/local/tomcat/properties/crypto.txt"
+                              - name: JAVA_OPTS
+                                value: "-Dcrypto.file.path=/usr/local/tomcat/properties/crypto.txt"
+                            volumeMounts:
+                              - name: crypto-volume
+                                mountPath: /usr/local/tomcat/properties/
+                              - name: config-volume
+                                mountPath: /usr/local/tomcat/conf/
+                          volumes:
+                            - name: crypto-volume
+                              configMap:
+                                name: crypto-config
+                            - name: config-volume
+                              configMap:
+                                name: my-app-config
+                      triggers:
+                        - type: ConfigChange
+                        - type: ImageChange
+                          imageChangeParams:
+                            automatic: true
+                            containerNames:
+                              - tomcat
+                            from:
+                              kind: ImageStreamTag
+                              name: ${IMAGE_NAME}:latest
+                    ---
+                    apiVersion: v1
+                    kind: Service
+                    metadata:
+                      name: ${APP_NAME}
+                    spec:
+                      selector:
+                        app: ${APP_NAME}
+                      ports:
+                        - protocol: TCP
+                          port: 8080
+                          targetPort: 8080
+                    ---
+                    apiVersion: route.openshift.io/v1
+                    kind: Route
+                    metadata:
+                      name: ${APP_NAME}
+                    spec:
+                      to:
+                        kind: Service
+                        name: ${APP_NAME}
+                      port:
+                        targetPort: 8080
+                      tls:
+                        termination: edge
+                        insecureEdgeTerminationPolicy: Redirect
+                    """
+
+                    writeFile file: 'deployment.yaml', text: yaml
+                    sh "oc apply -f deployment.yaml"
+                }
+            }
+        }
+
+        stage('Wait for Rollout') {
+            steps {
+                echo "⏳ Waiting for rollout to finish..."
+                sh "oc rollout status dc/${APP_NAME}"
+            }
+        }
+
+        stage('Print Route') {
+            steps {
+                script {
+                    def route = sh(
+                        script: "oc get route ${APP_NAME} -o jsonpath='{.spec.host}'",
+                        returnStdout: true
+                    ).trim()
+                    echo "✅ Application deployed at: http://${route}"
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "🧹 Cleaning up..."
+            sh "oc logout || true"
+        }
+        failure {
+            echo "❌ Pipeline failed. Review error messages above."
+        }
+        success {
+            echo "✅ Jenkins pipeline completed successfully."
+        }
+    }
+}
