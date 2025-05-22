@@ -1,0 +1,55 @@
+#!/bin/bash
+set -e
+
+# === CONFIGURATION ===
+APP_NAME="my-tomcat-app"
+PROJECT_NAME="myproject"  # Change as needed
+SOURCE_DIR="/path/to/your/app"  # Must contain Dockerfile and ROOT.war
+IMAGE_STREAM="${APP_NAME}-image"
+BUILD_CONFIG="${APP_NAME}-build"
+
+# === LOGIN & SET PROJECT ===
+echo "[INFO] Switching to project: $PROJECT_NAME"
+oc project $PROJECT_NAME
+
+# === DELETE OLD (OPTIONAL) ===
+# Uncomment if you want to clean up before re-creating
+# oc delete all -l app=$APP_NAME || true
+
+# === CREATE IMAGESTREAM IF NOT EXISTS ===
+if ! oc get is "$IMAGE_STREAM" >/dev/null 2>&1; then
+  echo "[INFO] Creating ImageStream: $IMAGE_STREAM"
+  oc create is "$IMAGE_STREAM"
+fi
+
+# === CREATE OR REPLACE BUILDCONFIG FROM LOCAL PATH ===
+if ! oc get bc "$BUILD_CONFIG" >/dev/null 2>&1; then
+  echo "[INFO] Creating BuildConfig: $BUILD_CONFIG"
+  oc new-build --name="$BUILD_CONFIG" --binary --to="$IMAGE_STREAM:latest"
+else
+  echo "[INFO] BuildConfig exists: $BUILD_CONFIG"
+fi
+
+# === START BUILD FROM LOCAL DIRECTORY ===
+echo "[INFO] Starting build from: $SOURCE_DIR"
+oc start-build "$BUILD_CONFIG" --from-dir="$SOURCE_DIR" --follow
+
+# === DEPLOYMENT ===
+if ! oc get dc "$APP_NAME" >/dev/null 2>&1; then
+  echo "[INFO] Creating deployment from image stream"
+  oc new-app "$IMAGE_STREAM:latest" --name="$APP_NAME"
+else
+  echo "[INFO] Rolling out latest image to deployment"
+  oc rollout latest dc/"$APP_NAME"
+fi
+
+# === EXPOSE SERVICE IF NOT ALREADY EXPOSED ===
+if ! oc get route "$APP_NAME" >/dev/null 2>&1; then
+  echo "[INFO] Exposing service to create route"
+  oc expose svc/"$APP_NAME"
+fi
+
+# === OUTPUT INFO ===
+echo "[SUCCESS] Deployment complete."
+oc get pods -l app="$APP_NAME"
+oc get route "$APP_NAME" -o jsonpath='{.spec.host}{"\n"}'
