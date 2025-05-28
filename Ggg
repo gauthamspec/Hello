@@ -1,0 +1,41 @@
+import jenkins.model.*
+import hudson.model.*
+import com.cloudbees.hudson.plugins.folder.*
+import org.jenkinsci.plugins.workflow.job.WorkflowJob
+
+def disableMatchingJobs(itemGroup) {
+    int disabledCount = 0
+
+    itemGroup.items.each { item ->
+        if (item instanceof com.cloudbees.hudson.plugins.folder.Folder) {
+            // Recurse into folder
+            disabledCount += disableMatchingJobs(item)
+        } else if (item instanceof org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject) {
+            // Handle multibranch pipelines
+            item.getItems().each { branchJob ->
+                if (branchJob instanceof WorkflowJob && branchJob.name.contains("S130")) {
+                    if (!branchJob.isDisabled()) {
+                        branchJob.setDisabled(true)
+                        println "Disabled branch job: ${branchJob.fullName}"
+                        disabledCount++
+                    } else {
+                        println "Already disabled: ${branchJob.fullName}"
+                    }
+                }
+            }
+        } else if (item instanceof Job) {
+            if (item.name.contains("S130") && !item.isDisabled()) {
+                item.setDisabled(true)
+                println "Disabled job: ${item.fullName}"
+                disabledCount++
+            } else if (item.name.contains("S130")) {
+                println "Already disabled: ${item.fullName}"
+            }
+        }
+    }
+
+    return disabledCount
+}
+
+int total = disableMatchingJobs(Jenkins.instance)
+println "\nTotal jobs disabled: $total"
