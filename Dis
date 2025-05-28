@@ -1,0 +1,19 @@
+// Jenkins Groovy Script Console Script
+import jenkins.model.*
+import hudson.model.*
+
+def count = 0
+Jenkins.instance.items.each { item ->
+    if (item.name.contains("S130")) {
+        if (item instanceof Job) {
+            if (!item.disabled) {
+                item.disable()
+                println "Disabled job: ${item.name}"
+                count++
+            } else {
+                println "Already disabled: ${item.name}"
+            }
+        }
+    }
+}
+println "Total jobs disabled: ${count}"
