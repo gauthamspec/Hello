@@ -1,0 +1,36 @@
+import jenkins.model.*
+import hudson.model.*
+import com.cloudbees.hudson.plugins.folder.*
+
+// Recursive function to process jobs in all folders
+def disableMatchingJobs(itemGroup) {
+    int disabledCount = 0
+
+    itemGroup.items.each { item ->
+        if (item instanceof com.cloudbees.hudson.plugins.folder.Folder) {
+            // Recurse into folder
+            disabledCount += disableMatchingJobs(item)
+        } else if (item instanceof org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject) {
+            // Handle multibranch pipeline
+            item.getItems().each { subJob ->
+                if (subJob.name.contains("S130") && subJob instanceof Job && !subJob.disabled) {
+                    subJob.disable()
+                    println "Disabled multibranch job: ${subJob.fullName}"
+                    disabledCount++
+                }
+            }
+        } else if (item instanceof Job) {
+            if (item.name.contains("S130") && !item.disabled) {
+                item.disable()
+                println "Disabled job: ${item.fullName}"
+                disabledCount++
+            }
+        }
+    }
+
+    return disabledCount
+}
+
+// Run on root Jenkins instance
+int totalDisabled = disableMatchingJobs(Jenkins.instance)
+println "\nTotal jobs disabled: $totalDisabled"
