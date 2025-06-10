@@ -1,0 +1,5 @@
+curl -u admin:admin123 \
+  -X PATCH \
+  -H "Content-Type: application/json" \
+  -d '{"props": {"restapi": ["'"$ENCODED_URL"'"]}}' \
+  "https://artifactory.fms.com/artifactory/api/metadata/components-dev/test/build-23/app-1.0.0.zip"
