@@ -1,0 +1,77 @@
+import requests
+from requests.auth import HTTPBasicAuth
+import urllib3
+from prettytable import PrettyTable
+
+# === CONFIGURATION ===
+BITBUCKET_URL = "https://bitbucket.mycompany.com"
+USERNAME = "your_username"
+PASSWORD = "your_token_or_password"
+EXCLUDED_PROJECTS = {"TEST", "DEMO", "OLD"}  # Exclude project keys (UPPERCASE)
+
+auth = HTTPBasicAuth(USERNAME, PASSWORD)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+def get_all_projects():
+    projects = []
+    start = 0
+    while True:
+        url = f"{BITBUCKET_URL}/rest/api/1.0/projects?limit=100&start={start}"
+        response = requests.get(url, auth=auth, verify=False)
+        response.raise_for_status()
+        data = response.json()
+        projects.extend(data["values"])
+        if data.get("isLastPage", True):
+            break
+        start = data["nextPageStart"]
+    return projects
+
+def get_repositories(project_key):
+    repos = []
+    start = 0
+    while True:
+        url = f"{BITBUCKET_URL}/rest/api/1.0/projects/{project_key}/repos?limit=100&start={start}"
+        response = requests.get(url, auth=auth, verify=False)
+        response.raise_for_status()
+        data = response.json()
+        repos.extend(data["values"])
+        if data.get("isLastPage", True):
+            break
+        start = data["nextPageStart"]
+    return repos
+
+# === MAIN ===
+
+projects = get_all_projects()
+table = PrettyTable(["Project Name", "Project Key", "Repository", "Repo Count"])
+
+total_projects = 0
+total_repos = 0
+
+for proj in projects:
+    project_key = proj["key"].strip().upper()
+    project_name = proj["name"].strip()
+
+    if project_key in EXCLUDED_PROJECTS:
+        continue
+
+    repos = get_repositories(project_key)
+    repo_names = [r["name"] for r in repos]
+    repo_count = len(repo_names)
+
+    total_projects += 1
+    total_repos += repo_count
+
+    for i, repo in enumerate(repo_names):
+        if i == 0:
+            table.add_row([project_name, project_key, repo, repo_count])
+        else:
+            table.add_row(["", "", repo, ""])
+
+    table.add_row(["────────────", "──────────", "───────────────", "────────────"])
+
+# === OUTPUT ===
+print(table)
+print("\n✅ Summary:")
+print(f"Total Projects Included: {total_projects}")
+print(f"Total Repositories Counted: {total_repos}")
