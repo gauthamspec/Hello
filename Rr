@@ -1,0 +1,55 @@
+import requests
+from datetime import datetime, timedelta
+from requests.auth import HTTPBasicAuth
+
+# === CONFIGURATION ===
+BITBUCKET_BASE_URL = "https://bitbucket.mycompany.com"
+USERNAME = "your_username"
+PASSWORD = "your_token_or_password"
+PROJECT_KEY = "MYPROJ"
+
+REPO_SLUGS = ["repo-one", "repo-two", "repo-three"]  # ← replace with your repo slugs
+
+# === TIME RANGE ===
+now = datetime.utcnow()
+since = now - timedelta(days=7)
+since_iso = since.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+auth = HTTPBasicAuth(USERNAME, PASSWORD)
+
+def get_commit_count(repo_slug):
+    total = 0
+    url = f"{BITBUCKET_BASE_URL}/rest/api/1.0/projects/{PROJECT_KEY}/repos/{repo_slug}/commits"
+    params = {"since": since_iso, "limit": 100}
+
+    while url:
+        res = requests.get(url, auth=auth, params=params)
+        if res.status_code == 404:
+            print(f"[!] Repo not found: {repo_slug}")
+            break
+        res.raise_for_status()
+        data = res.json()
+        total += len(data["values"])
+        if data.get("isLastPage"):
+            break
+        url = f"{BITBUCKET_BASE_URL}/rest/api/1.0/projects/{PROJECT_KEY}/repos/{repo_slug}/commits?start={data['nextPageStart']}&limit=100"
+        params = None
+    return total
+
+# === MAIN EXECUTION ===
+total_commits = 0
+
+for repo in REPO_SLUGS:
+    try:
+        count = get_commit_count(repo)
+        print(f"{repo}: {count} commits (last 7 days)")
+        total_commits += count
+    except Exception as e:
+        print(f"Error processing {repo}: {e}")
+
+# === RESULT ===
+average_per_day = total_commits / 7
+print("\n===============================")
+print(f"Total Weekly Commits: {total_commits}")
+print(f"Average Commits Per Day: {average_per_day:.2f}")
+print("===============================")
