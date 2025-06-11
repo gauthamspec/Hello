@@ -1,0 +1,53 @@
+import requests
+from datetime import datetime, timedelta
+from requests.auth import HTTPBasicAuth
+import urllib3
+
+# Suppress SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# === CONFIGURATION ===
+BITBUCKET_BASE_URL = "https://bitbucket.mycompany.com"
+USERNAME = "your_username"
+PASSWORD = "your_token_or_password"
+PROJECT_KEY = "MYPROJ"
+REPO_SLUG = "my_repo_slug"
+BRANCH_NAME = "main"
+
+# === TIME RANGE ===
+now = datetime.utcnow()
+since = now - timedelta(days=7)
+since_iso = since.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+auth = HTTPBasicAuth(USERNAME, PASSWORD)
+
+def get_commit_count():
+    total = 0
+    url = f"{BITBUCKET_BASE_URL}/rest/api/1.0/projects/{PROJECT_KEY}/repos/{REPO_SLUG}/commits"
+    params = {
+        "since": since_iso,
+        "until": "refs/heads/" + BRANCH_NAME,
+        "limit": 100
+    }
+
+    while url:
+        res = requests.get(url, auth=auth, params=params, verify=False)
+        if res.status_code == 404:
+            print(f"[!] Repo or branch not found: {REPO_SLUG} / {BRANCH_NAME}")
+            break
+        res.raise_for_status()
+        data = res.json()
+        total += len(data["values"])
+        if data.get("isLastPage"):
+            break
+        url = f"{BITBUCKET_BASE_URL}/rest/api/1.0/projects/{PROJECT_KEY}/repos/{REPO_SLUG}/commits?start={data['nextPageStart']}&limit=100"
+        params = None
+    return total
+
+# === MAIN ===
+try:
+    count = get_commit_count()
+    print(f"{REPO_SLUG}@{BRANCH_NAME}: {count} commits (last 7 days)")
+    print(f"Average commits per day: {count / 7:.2f}")
+except Exception as e:
+    print(f"Error: {e}")
