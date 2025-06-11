@@ -1,0 +1,80 @@
+import requests
+from datetime import datetime, timedelta
+from requests.auth import HTTPBasicAuth
+
+# === CONFIGURATION ===
+BITBUCKET_BASE_URL = "https://bitbucket.mycompany.com"
+USERNAME = "your_username"
+PASSWORD = "your_token_or_password"
+
+# === TIME RANGE ===
+now = datetime.utcnow()
+since = now - timedelta(days=7)
+since_iso = since.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+auth = HTTPBasicAuth(USERNAME, PASSWORD)
+
+def get_all_projects():
+    projects = []
+    url = f"{BITBUCKET_BASE_URL}/rest/api/1.0/projects?limit=100"
+    while url:
+        res = requests.get(url, auth=auth)
+        res.raise_for_status()
+        data = res.json()
+        projects.extend([proj["key"] for proj in data["values"]])
+        if data.get("isLastPage"):
+            break
+        url = f"{BITBUCKET_BASE_URL}/rest/api/1.0/projects?start={data['nextPageStart']}&limit=100"
+    return projects
+
+def get_repositories(project_key):
+    repos = []
+    url = f"{BITBUCKET_BASE_URL}/rest/api/1.0/projects/{project_key}/repos?limit=100"
+    while url:
+        res = requests.get(url, auth=auth)
+        res.raise_for_status()
+        data = res.json()
+        repos.extend([repo["slug"] for repo in data["values"]])
+        if data.get("isLastPage"):
+            break
+        url = f"{BITBUCKET_BASE_URL}/rest/api/1.0/projects/{project_key}/repos?start={data['nextPageStart']}&limit=100"
+    return repos
+
+def get_commit_count(project_key, repo_slug):
+    total = 0
+    url = f"{BITBUCKET_BASE_URL}/rest/api/1.0/projects/{project_key}/repos/{repo_slug}/commits"
+    params = {"since": since_iso, "limit": 100}
+
+    while url:
+        res = requests.get(url, auth=auth, params=params)
+        if res.status_code == 404:
+            break  # repo may not be available
+        res.raise_for_status()
+        data = res.json()
+        total += len(data["values"])
+        if data.get("isLastPage"):
+            break
+        url = f"{BITBUCKET_BASE_URL}/rest/api/1.0/projects/{project_key}/repos/{repo_slug}/commits?start={data['nextPageStart']}&limit=100"
+        params = None
+    return total
+
+# === MAIN EXECUTION ===
+total_commits = 0
+projects = get_all_projects()
+
+for project in projects:
+    repos = get_repositories(project)
+    for repo in repos:
+        try:
+            count = get_commit_count(project, repo)
+            print(f"{project}/{repo}: {count} commits")
+            total_commits += count
+        except Exception as e:
+            print(f"Error fetching {project}/{repo}: {e}")
+
+# === RESULT ===
+average_per_day = total_commits / 7
+print("\n" + "="*40)
+print(f"Total Commits in Last 7 Days: {total_commits}")
+print(f"Average Commits Per Day: {average_per_day:.2f}")
+print("="*40)
