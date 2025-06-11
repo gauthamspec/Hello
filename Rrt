@@ -1,0 +1,43 @@
+#!/bin/bash
+
+# === CONFIGURATION ===
+BITBUCKET_URL="https://bitbucket.mycompany.com"
+USERNAME="your_username"
+PASSWORD="your_token_or_password"
+
+echo "🔍 Fetching all project keys..."
+
+# Get project keys with correct casing
+PROJECT_KEYS=$(curl -s -u "$USERNAME:$PASSWORD" -k \
+  "$BITBUCKET_URL/rest/api/1.0/projects?limit=100" \
+  | grep -o '"key":"[^"]*"' | sed 's/"key":"//g')
+
+if [ -z "$PROJECT_KEYS" ]; then
+  echo "❌ No projects found or authentication failed."
+  exit 1
+fi
+
+total_projects=0
+total_repos=0
+
+echo ""
+for PROJECT_KEY in $PROJECT_KEYS; do
+  total_projects=$((total_projects + 1))
+
+  # Get raw response to inspect if needed
+  REPO_JSON=$(curl -s -u "$USERNAME:$PASSWORD" -k \
+    "$BITBUCKET_URL/rest/api/1.0/projects/${PROJECT_KEY}/repos?limit=100")
+
+  # Uncomment for debug:
+  # echo "$REPO_JSON" | head -n 20
+
+  # Count repos by counting "slug" lines
+  REPO_COUNT=$(echo "$REPO_JSON" | grep -o '"slug":"' | wc -l)
+
+  echo "📁 Project: $PROJECT_KEY — 📦 Repositories: $REPO_COUNT"
+  total_repos=$((total_repos + REPO_COUNT))
+done
+
+echo ""
+echo "📊 Total Projects: $total_projects"
+echo "📦 Total Repositories: $total_repos"
