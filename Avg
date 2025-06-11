@@ -1,0 +1,55 @@
+#!/bin/bash
+
+# === CONFIGURATION ===
+BITBUCKET_URL="https://bitbucket.mycompany.com"
+USERNAME="your_username"
+PASSWORD="your_token_or_password"
+PROJECT_KEY="MYPROJ"
+TMP_DIR="/tmp/bitbucket-repos"
+DAYS_AGO=7
+
+# === CLEANUP ===
+rm -rf "$TMP_DIR"
+mkdir -p "$TMP_DIR"
+
+# === GET REPO LIST ===
+echo "Fetching repository list from project $PROJECT_KEY..."
+REPOS=$(curl -s -u "$USERNAME:$PASSWORD" -k "${BITBUCKET_URL}/rest/api/1.0/projects/${PROJECT_KEY}/repos?limit=100" | jq -r '.values[].slug')
+
+if [ -z "$REPOS" ]; then
+  echo "❌ No repositories found or authentication failed."
+  exit 1
+fi
+
+total_commits=0
+total_branches=0
+
+for repo in $REPOS; do
+  echo "Cloning $repo..."
+  REPO_URL="${BITBUCKET_URL}/scm/${PROJECT_KEY,,}/$repo.git"
+  CLONE_PATH="${TMP_DIR}/${repo}"
+
+  git clone --mirror "https://${USERNAME}:${PASSWORD}@${REPO_URL#https://}" "$CLONE_PATH" >/dev/null 2>&1 || {
+    echo "❌ Failed to clone $repo"
+    continue
+  }
+
+  cd "$CLONE_PATH" || continue
+  git remote update >/dev/null 2>&1
+
+  echo "🔍 Analyzing branches in $repo..."
+  for branch in $(git for-each-ref --format='%(refname:short)' refs/remotes/); do
+    [[ "$branch" == *HEAD* ]] && continue
+    count=$(git rev-list --count --since="$DAYS_AGO days ago" "$branch" 2>/dev/null)
+    echo "   $branch: $count commits"
+    total_commits=$((total_commits + count))
+    total_branches=$((total_branches + 1))
+  done
+done
+
+echo ""
+echo "📊 Total Commits (Last $DAYS_AGO days): $total_commits"
+echo "📈 Average Commits Per Day: $(awk "BEGIN {printf \"%.2f\", $total_commits / $DAYS_AGO}")"
+if [ "$total_branches" -gt 0 ]; then
+  echo "📉 Average Commits Per Branch: $(awk "BEGIN {printf \"%.2f\", $total_commits / $total_branches}")"
+fi
