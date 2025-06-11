@@ -1,0 +1,26 @@
+#!/bin/bash
+
+# === CONFIGURATION ===
+GIT_REPO_URL="https://bitbucket.mycompany.com/scm/myproj/myrepo.git"
+CLONE_DIR="/tmp/myrepo"
+DAYS_AGO=7
+
+# === CLEANUP PREVIOUS CLONE ===
+rm -rf "$CLONE_DIR"
+
+echo "Cloning repository..."
+git clone --mirror "$GIT_REPO_URL" "$CLONE_DIR" >/dev/null 2>&1 || { echo "Clone failed! Check repo URL or credentials."; exit 1; }
+
+cd "$CLONE_DIR" || exit 1
+
+echo "Fetching remote branches..."
+git remote update >/dev/null 2>&1
+
+echo -e "\nCommit counts for all branches in the last $DAYS_AGO days:"
+for branch in $(git for-each-ref --format='%(refname:short)' refs/remotes/); do
+  # Skip HEAD pointer
+  [[ "$branch" == *HEAD* ]] && continue
+
+  count=$(git rev-list --count --since="$DAYS_AGO days ago" "$branch" 2>/dev/null)
+  echo "$branch: $count commits"
+done
