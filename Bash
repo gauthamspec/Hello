@@ -1,0 +1,34 @@
+#!/bin/bash
+
+# === CONFIGURATION ===
+BITBUCKET_URL="https://bitbucket.mycompany.com"
+USERNAME="your_username"
+PASSWORD="your_token_or_password"
+PROJECT_KEY="MYPROJ"
+REPO_SLUG="my_repo_slug"
+BRANCH_NAME="main"
+
+# === TIME RANGE ===
+SINCE_DATE=$(date -u -d "-7 days" +"%Y-%m-%dT%H:%M:%S.000Z")
+
+# === API URL ===
+COMMITS_API="${BITBUCKET_URL}/rest/api/1.0/projects/${PROJECT_KEY}/repos/${REPO_SLUG}/commits?until=refs/heads/${BRANCH_NAME}&since=${SINCE_DATE}&limit=100"
+
+# === CALL API ===
+response=$(curl -s -u "${USERNAME}:${PASSWORD}" -k "${COMMITS_API}")
+
+# === CHECK FOR ERRORS ===
+if echo "$response" | grep -q '"errors"'; then
+  echo "Error fetching commits. Check project/repo/branch or credentials."
+  echo "$response"
+  exit 1
+fi
+
+# === COUNT COMMITS ===
+commit_count=$(echo "$response" | jq '.values | length')
+
+# === OUTPUT ===
+echo "Repo: ${REPO_SLUG}"
+echo "Branch: ${BRANCH_NAME}"
+echo "Commits in last 7 days: ${commit_count}"
+echo "Average commits per day: $(awk "BEGIN {printf \"%.2f\", ${commit_count}/7}")"
