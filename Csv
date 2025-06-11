@@ -1,0 +1,88 @@
+import requests
+from requests.auth import HTTPBasicAuth
+import urllib3
+from prettytable import PrettyTable
+import csv
+
+# === CONFIGURATION ===
+BITBUCKET_URL = "https://bitbucket.mycompany.com"
+USERNAME = "your_username"
+PASSWORD = "your_token_or_password"
+EXCLUDED_PROJECTS = {"TEST", "DEMO", "OLD"}  # Project keys to exclude (UPPERCASE)
+
+auth = HTTPBasicAuth(USERNAME, PASSWORD)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+def get_all_projects():
+    projects = []
+    start = 0
+    while True:
+        url = f"{BITBUCKET_URL}/rest/api/1.0/projects?limit=100&start={start}"
+        response = requests.get(url, auth=auth, verify=False)
+        response.raise_for_status()
+        data = response.json()
+        projects.extend(data["values"])
+        if data.get("isLastPage", True):
+            break
+        start = data["nextPageStart"]
+    return projects
+
+def get_repositories(project_key):
+    repos = []
+    start = 0
+    while True:
+        url = f"{BITBUCKET_URL}/rest/api/1.0/projects/{project_key}/repos?limit=100&start={start}"
+        response = requests.get(url, auth=auth, verify=False)
+        response.raise_for_status()
+        data = response.json()
+        repos.extend(data["values"])
+        if data.get("isLastPage", True):
+            break
+        start = data["nextPageStart"]
+    return repos
+
+# === MAIN ===
+
+projects = get_all_projects()
+table = PrettyTable(["Project Name", "Project Key", "Repository", "Repo Count"])
+csv_rows = []
+
+total_projects = 0
+total_repos = 0
+
+for proj in projects:
+    project_key = proj["key"].strip().upper()
+    project_name = proj["name"].strip()
+
+    if project_key in EXCLUDED_PROJECTS:
+        continue
+
+    repos = get_repositories(project_key)
+    repo_names = [r["name"] for r in repos]
+    repo_count = len(repo_names)
+
+    total_projects += 1
+    total_repos += repo_count
+
+    for i, repo in enumerate(repo_names):
+        row = [project_name if i == 0 else "", project_key if i == 0 else "", repo, repo_count if i == 0 else ""]
+        table.add_row(row)
+        csv_rows.append([project_name, project_key, repo, repo_count if i == 0 else ""])
+
+    # Add separator (for table only)
+    table.add_row(["────────────", "──────────", "───────────────", "────────────"])
+
+# === DISPLAY TABLE ===
+print(table)
+
+# === WRITE TO CSV ===
+csv_file = "bitbucket_repo_report.csv"
+with open(csv_file, "w", newline="", encoding="utf-8") as f:
+    writer = csv.writer(f)
+    writer.writerow(["Project Name", "Project Key", "Repository", "Repo Count"])
+    writer.writerows(csv_rows)
+
+print(f"\n✅ Summary:")
+print(f"Total Projects Included: {total_projects}")
+print(f"Total Repositories Counted: {total_repos}")
+print(f"📄 CSV export saved to: {csv_file}")
