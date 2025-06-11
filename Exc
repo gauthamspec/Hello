@@ -1,0 +1,63 @@
+import requests
+from requests.auth import HTTPBasicAuth
+import urllib3
+
+# === CONFIGURATION ===
+BITBUCKET_URL = "https://bitbucket.mycompany.com"
+USERNAME = "your_username"
+PASSWORD = "your_token_or_password"
+
+EXCLUDED_PROJECTS = {"TEST", "DEMO", "OLD"}  # <-- ADD project keys to exclude here (case-sensitive)
+
+auth = HTTPBasicAuth(USERNAME, PASSWORD)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+def get_all_projects():
+    projects = []
+    start = 0
+    while True:
+        url = f"{BITBUCKET_URL}/rest/api/1.0/projects?limit=100&start={start}"
+        response = requests.get(url, auth=auth, verify=False)
+        response.raise_for_status()
+        data = response.json()
+        projects.extend(data["values"])
+        if data.get("isLastPage", True):
+            break
+        start = data["nextPageStart"]
+    return projects
+
+def get_repo_count(project_key):
+    count = 0
+    start = 0
+    while True:
+        url = f"{BITBUCKET_URL}/rest/api/1.0/projects/{project_key}/repos?limit=100&start={start}"
+        response = requests.get(url, auth=auth, verify=False)
+        response.raise_for_status()
+        data = response.json()
+        count += len(data["values"])
+        if data.get("isLastPage", True):
+            break
+        start = data["nextPageStart"]
+    return count
+
+# === MAIN ===
+
+print("🔍 Fetching Bitbucket projects...\n")
+projects = get_all_projects()
+
+total_repos = 0
+included_projects = 0
+
+for proj in projects:
+    project_key = proj["key"]
+    if project_key in EXCLUDED_PROJECTS:
+        continue  # skip excluded
+
+    included_projects += 1
+    repo_count = get_repo_count(project_key)
+    print(f"📁 Project: {project_key} — 📦 Repositories: {repo_count}")
+    total_repos += repo_count
+
+print("\n✅ Summary (excluding: " + ", ".join(EXCLUDED_PROJECTS) + ")")
+print(f"Total Projects Included: {included_projects}")
+print(f"Total Repositories Counted: {total_repos}")
