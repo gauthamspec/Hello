@@ -1,0 +1,79 @@
+import os
+import subprocess
+import requests
+import urllib3
+from tabulate import tabulate
+
+# === CONFIGURATION ===
+BITBUCKET_URL = "https://your-bitbucket-server.com"
+USERNAME = "your_username"
+PASSWORD = "your_password"  # ⚠️ Use env vars or prompt securely in production
+PROJECT_KEY = "YOUR_PROJECT"
+CLONE_DIR = "./bitbucket_repos"
+USE_SSH = False  # Set to True if using SSH instead of HTTPS
+
+# === Disable SSL warnings for HTTPS APIs ===
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# === FUNCTIONS ===
+
+def get_repos(project_key):
+    url = f"{BITBUCKET_URL}/rest/api/1.0/projects/{project_key}/repos?limit=100"
+    response = requests.get(url, auth=(USERNAME, PASSWORD), verify=False)
+    response.raise_for_status()
+    repos = response.json().get("values", [])
+    return [repo["slug"] for repo in repos]
+
+def clone_repo(project_key, repo_slug):
+    if USE_SSH:
+        repo_url = f"git@your-bitbucket-server.com:{project_key.lower()}/{repo_slug}.git"
+    else:
+        repo_url = f"https://{USERNAME}:{PASSWORD}@your-bitbucket-server.com/scm/{project_key.lower()}/{repo_slug}.git"
+
+    local_path = os.path.join(CLONE_DIR, repo_slug)
+    if not os.path.exists(local_path):
+        print(f"📥 Cloning: {repo_slug}")
+        env = os.environ.copy()
+        if not USE_SSH:
+            env["GIT_SSL_NO_VERIFY"] = "1"
+        subprocess.run(["git", "clone", "--bare", repo_url, local_path], check=True, env=env if not USE_SSH else None)
+    return local_path
+
+def get_branch_commit_counts(repo_path):
+    # List all local branches in a bare repo
+    output = subprocess.check_output(
+        ["git", "--git-dir", repo_path, "for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+        text=True
+    )
+    branches = [line.strip() for line in output.splitlines() if line.strip()]
+    branch_counts = {}
+
+    for branch in branches:
+        try:
+            count = subprocess.check_output(
+                ["git", "--git-dir", repo_path, "rev-list", "--count", branch],
+                text=True
+            ).strip()
+            branch_counts[branch] = int(count)
+        except subprocess.CalledProcessError:
+            branch_counts[branch] = "Error"
+    return branch_counts
+
+# === MAIN SCRIPT ===
+if __name__ == "__main__":
+    os.makedirs(CLONE_DIR, exist_ok=True)
+    repos = get_repos(PROJECT_KEY)
+    full_data = []
+
+    for repo in repos:
+        print(f"\n🔍 Processing repo: {repo}")
+        try:
+            repo_path = clone_repo(PROJECT_KEY, repo)
+            branch_commits = get_branch_commit_counts(repo_path)
+            for branch, count in branch_commits.items():
+                full_data.append([PROJECT_KEY, repo, branch, count])
+        except Exception as e:
+            full_data.append([PROJECT_KEY, repo, "ERROR", str(e)])
+
+    print("\n📊 Commit Counts by Repo and Branch:\n")
+    print(tabulate(full_data, headers=["Project", "Repository", "Branch", "Commits"], tablefmt="fancy_grid"))
