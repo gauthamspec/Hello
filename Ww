@@ -1,0 +1,103 @@
+import os
+import subprocess
+import requests
+import urllib3
+import pandas as pd
+from datetime import datetime, timedelta
+from collections import defaultdict
+
+# === CONFIG ===
+BITBUCKET_URL = "https://your-bitbucket-server.com"
+USERNAME = "your_username"
+PASSWORD = "your_password"
+PROJECT_KEYS = ["PROJECT1", "PROJECT2"]
+CLONE_DIR = "./bitbucket_repos"
+EXCEL_OUTPUT = "commit_summary_all_projects.xlsx"
+USE_SSH = False
+DAYS_BACK = 365
+EXCLUDED_PREFIXES = ["feature/"]
+
+# === Disable SSL Warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# === FUNCTIONS ===
+
+def get_repos(project_key):
+    url = f"{BITBUCKET_URL}/rest/api/1.0/projects/{project_key}/repos?limit=100"
+    response = requests.get(url, auth=(USERNAME, PASSWORD), verify=False)
+    if response.status_code != 200:
+        print(f"❌ Error {response.status_code} - URL: {url}")
+        return []
+    return [repo["slug"] for repo in response.json().get("values", [])]
+
+def clone_repo(project_key, repo_slug):
+    if USE_SSH:
+        repo_url = f"git@your-bitbucket-server.com:{project_key.lower()}/{repo_slug}.git"
+    else:
+        repo_url = f"https://{USERNAME}:{PASSWORD}@your-bitbucket-server.com/scm/{project_key.lower()}/{repo_slug}.git"
+    local_path = os.path.join(CLONE_DIR, f"{project_key}_{repo_slug}")
+    if not os.path.exists(local_path):
+        print(f"📥 Cloning: {project_key}/{repo_slug}")
+        env = os.environ.copy()
+        if not USE_SSH:
+            env["GIT_SSL_NO_VERIFY"] = "1"
+        subprocess.run(["git", "clone", "--bare", repo_url, local_path], check=True, env=env if not USE_SSH else None)
+    return local_path
+
+def get_branch_commit_counts(repo_path, days):
+    since_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    output = subprocess.check_output(
+        ["git", "--git-dir", repo_path, "for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+        text=True
+    )
+    branches = [line.strip() for line in output.splitlines() if line.strip()]
+    branch_counts = {}
+    for branch in branches:
+        if any(branch.startswith(prefix) for prefix in EXCLUDED_PREFIXES):
+            continue
+        try:
+            count = subprocess.check_output(
+                ["git", "--git-dir", repo_path, "rev-list", f"--since={since_date}", "--count", branch],
+                text=True
+            ).strip()
+            count = int(count)
+            if count > 0:
+                branch_counts[branch] = count
+        except subprocess.CalledProcessError:
+            continue
+    return branch_counts
+
+# === MAIN SCRIPT ===
+if __name__ == "__main__":
+    os.makedirs(CLONE_DIR, exist_ok=True)
+    project_data_map = {}
+    project_totals = defaultdict(int)
+
+    for project_key in PROJECT_KEYS:
+        print(f"\n🔎 Processing project: {project_key}")
+        repos = get_repos(project_key)
+        project_records = []
+
+        for repo in repos:
+            print(f"📦 Repo: {repo}")
+            try:
+                repo_path = clone_repo(project_key, repo)
+                branch_commits = get_branch_commit_counts(repo_path, DAYS_BACK)
+                for branch, count in branch_commits.items():
+                    project_records.append([project_key, repo, branch, count])
+                    project_totals[project_key] += count
+            except Exception as e:
+                project_records.append([project_key, repo, "ERROR", str(e)])
+
+        project_data_map[project_key] = project_records
+
+    # === Write Excel ===
+    print(f"\n📝 Writing Excel report: {EXCEL_OUTPUT}")
+    with pd.ExcelWriter(EXCEL_OUTPUT, engine='openpyxl') as writer:
+        for project_key, records in project_data_map.items():
+            df = pd.DataFrame(records, columns=["Project", "Repository", "Branch", f"Commits (Last {DAYS_BACK} Days)"])
+            total = project_totals[project_key]
+            df.loc[len(df)] = [project_key, "TOTAL", "", total]
+            df.to_excel(writer, sheet_name=project_key, index=False)
+
+    print("✅ Done! Each project is saved in a separate Excel sheet with total commits.")
