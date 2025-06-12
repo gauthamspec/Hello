@@ -1,0 +1,9 @@
+--project-tags scid:2203 \
+--project-groups "YourGroup" \
+--scan-types sca \
+--tags release:main,inventory:attested \
+--file-source . \
+--sca-resolver "/data/sca_resolver/ScaResolver" \
+--sca-resolver-params "-s libs" \
+--output-name checkmarx-ast-results \
+--report-format summaryHTML,PDF
