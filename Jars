@@ -1,0 +1,36 @@
+#!/bin/bash
+
+# === CONFIG ===
+INPUT_FOLDER="/path/to/your/jars_folder"     # <- CHANGE THIS
+OUTPUT_FOLDER="stripped-jars"                # Folder to store cleaned jars
+
+# === SETUP ===
+rm -rf "$OUTPUT_FOLDER"
+mkdir -p "$OUTPUT_FOLDER"
+
+cd "$INPUT_FOLDER" || exit 1
+
+echo "Stripping embedded .jar files from all jars in $INPUT_FOLDER ..."
+
+# === MAIN LOOP ===
+for jar in *.jar; do
+  echo "Processing $jar ..."
+  tmpdir=$(mktemp -d)
+
+  # Extract jar contents
+  unzip -q "$jar" -d "$tmpdir"
+
+  # Remove any embedded .jar files
+  find "$tmpdir" -name "*.jar" -delete
+
+  # Repack cleaned jar
+  (
+    cd "$tmpdir" || exit
+    zip -qr "../../$OUTPUT_FOLDER/$jar" .
+  )
+
+  # Cleanup temp
+  rm -rf "$tmpdir"
+done
+
+echo "✅ All cleaned jars saved to: $OUTPUT_FOLDER/"
