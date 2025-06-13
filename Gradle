@@ -1,0 +1,13 @@
+import json
+
+with open("dependencies.json", "r") as f:
+    jars = json.load(f)
+
+with open("build.gradle", "w") as f:
+    f.write("plugins { id 'java' }\n\n")
+    f.write("repositories { flatDir { dirs 'libs' } }\n\n")
+    f.write("dependencies {\n")
+    for jar in jars:
+        name = jar.split("/")[-1].replace(".jar", "")
+        f.write(f"    implementation name: '{name}'\n")
+    f.write("}\n")
