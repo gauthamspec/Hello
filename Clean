@@ -1,0 +1,49 @@
+#!/bin/bash
+
+# === CONFIGURATION ===
+INPUT_FOLDER="/path/to/your/jars_folder"       # <-- CHANGE THIS!
+OUTPUT_FOLDER="deep-stripped-jars"
+FINAL_ZIP="final-clean-deep.zip"
+
+# === CLEANUP OLD OUTPUTS ===
+echo "🧹 Cleaning previous output..."
+rm -rf "$OUTPUT_FOLDER" "$FINAL_ZIP"
+mkdir -p "$OUTPUT_FOLDER"
+
+# === PROCESS EACH JAR FILE ===
+echo "🔧 Deep cleaning jars in: $INPUT_FOLDER"
+
+cd "$INPUT_FOLDER" || { echo "❌ Folder not found: $INPUT_FOLDER"; exit 1; }
+
+for jar in *.jar; do
+  echo "📦 Processing: $jar ..."
+  tmpdir=$(mktemp -d)
+
+  # Extract the jar
+  unzip -q "$jar" -d "$tmpdir"
+
+  # Remove any embedded archives (.jar, .zip, .war, .rar)
+  echo "   🧼 Removing embedded archives..."
+  embedded_count=$(find "$tmpdir" -type f -name "*.jar" -o -name "*.zip" -o -name "*.war" -o -name "*.rar" | wc -l)
+  find "$tmpdir" -type f -name "*.jar" -o -name "*.zip" -o -name "*.war" -o -name "*.rar" -delete
+  echo "   ➖ Removed $embedded_count embedded file(s)."
+
+  # Remove common nested library folders
+  rm -rf "$tmpdir"/BOOT-INF/lib "$tmpdir"/WEB-INF/lib "$tmpdir"/lib "$tmpdir"/libs
+
+  # Rebuild the cleaned jar
+  (
+    cd "$tmpdir" || exit
+    zip -qr "../../$OUTPUT_FOLDER/$jar" .
+  )
+
+  rm -rf "$tmpdir"
+done
+
+# === ZIP THE FINAL OUTPUT ===
+cd "$OUTPUT_FOLDER" || exit 1
+echo "📦 Creating final zip: $FINAL_ZIP"
+zip -r "../$FINAL_ZIP" *.jar
+
+cd ..
+echo "✅ All cleaned jars zipped in: $FINAL_ZIP"
