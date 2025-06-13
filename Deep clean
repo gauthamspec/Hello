@@ -1,0 +1,35 @@
+#!/bin/bash
+
+# === CONFIG ===
+INPUT_FOLDER="/path/to/your/jars_folder"
+OUTPUT_FOLDER="deep-stripped-jars"
+
+rm -rf "$OUTPUT_FOLDER"
+mkdir -p "$OUTPUT_FOLDER"
+
+cd "$INPUT_FOLDER" || exit 1
+
+echo "🔧 Deep cleaning jars in: $INPUT_FOLDER"
+
+for jar in *.jar; do
+  echo "Processing $jar ..."
+  tmpdir=$(mktemp -d)
+
+  unzip -q "$jar" -d "$tmpdir"
+
+  # Remove embedded archives
+  find "$tmpdir" -type f -name "*.jar" -o -name "*.zip" -o -name "*.war" -o -name "*.rar" -delete
+
+  # Remove common nested lib folders
+  rm -rf "$tmpdir"/BOOT-INF/lib "$tmpdir"/WEB-INF/lib "$tmpdir"/lib "$tmpdir"/libs
+
+  # Repack cleaned jar
+  (
+    cd "$tmpdir" || exit
+    zip -qr "../../$OUTPUT_FOLDER/$jar" .
+  )
+
+  rm -rf "$tmpdir"
+done
+
+echo "✅ Deep cleaned jars saved to: $OUTPUT_FOLDER"
