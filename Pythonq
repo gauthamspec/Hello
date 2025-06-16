@@ -1,0 +1,40 @@
+import re
+import json
+
+def extract_from_gradle(file_path):
+    with open(file_path, 'r') as f:
+        content = f.read()
+
+    pattern = re.compile(r"(implementation|api|compile|compileOnly|runtimeOnly)\s+['\"]([^'\"]+)['\"]")
+    matches = pattern.findall(content)
+
+    gradle_deps = set(dep for _, dep in matches)
+    return gradle_deps
+
+def extract_from_dependencies_json(file_path):
+    with open(file_path, 'r') as f:
+        deps = json.load(f)
+
+    json_deps = set()
+    for dep in deps:
+        name = dep.get("name")
+        version = dep.get("version")
+        if name and version:
+            json_deps.add(f"{name}:{version}")
+    return json_deps
+
+def print_combined_dependencies_block(gradle_deps, json_deps):
+    combined = sorted(gradle_deps.union(json_deps))
+    print("dependencies {")
+    for dep in combined:
+        print(f"    directOnly '{dep}'")
+    print("}")
+
+# Paths
+gradle_file = "build.gradle"
+json_file = "dependencies.json"
+
+# Run
+gradle_deps = extract_from_gradle(gradle_file)
+json_deps = extract_from_dependencies_json(json_file)
+print_combined_dependencies_block(gradle_deps, json_deps)
