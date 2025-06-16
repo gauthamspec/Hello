@@ -1,0 +1,61 @@
+import re
+import json
+import os
+
+def clean_dependency_string(dep):
+    dep = dep.strip()
+    dep = re.sub(r"@jar", "", dep)
+    return dep
+
+def extract_from_dependencies_json(file_path):
+    with open(file_path, 'r') as f:
+        data = json.load(f)
+
+    deps = set()
+    if isinstance(data, list):
+        for d in data:
+            if isinstance(d, str):
+                deps.add(clean_dependency_string(d))
+            elif isinstance(d, dict) and 'name' in d and 'version' in d:
+                deps.add(f"{d['name']}:{d['version']}")
+    return deps
+
+def extract_from_gradle(file_path):
+    with open(file_path, 'r') as f:
+        content = f.read()
+
+    pattern = re.compile(r"(implementation|api|compile|compileOnly|runtimeOnly|testImplementation)\s+['\"]([^'\"]+)['\"]")
+    matches = pattern.findall(content)
+
+    deps = set()
+    for _, dep in matches:
+        deps.add(clean_dependency_string(dep))
+    return deps
+
+def extract_from_runtime_jars(jar_folder):
+    deps = set()
+    for file in os.listdir(jar_folder):
+        if file.endswith(".jar"):
+            # Just use the jar name without extension
+            name = os.path.splitext(file)[0]
+            deps.add(f"{name}.jar (local runtime jar)")
+    return deps
+
+def print_combined_dependencies_block(gradle_deps, json_deps, jar_deps):
+    print("dependencies {")
+    for dep in sorted(gradle_deps.union(json_deps)):
+        print(f"    directOnly '{dep}'")
+    for jar in sorted(jar_deps):
+        print(f"    // runtimeOnly local JAR: {jar}")
+    print("}")
+
+# === CONFIG ===
+gradle_file = "build.gradle"
+json_file = "dependencies.json"
+jar_folder = "libs"  # Folder where runtime JARs are placed
+
+# === RUN ===
+gradle_deps = extract_from_gradle(gradle_file)
+json_deps = extract_from_dependencies_json(json_file)
+jar_deps = extract_from_runtime_jars(jar_folder)
+print_combined_dependencies_block(gradle_deps, json_deps, jar_deps)
