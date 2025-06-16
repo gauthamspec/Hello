@@ -1,0 +1,17 @@
+import re
+
+def extract_dependencies(gradle_file):
+    with open(gradle_file, 'r') as f:
+        content = f.read()
+
+    # Match compile / implementation / api dependencies
+    pattern = re.compile(r"(implementation|api|compile|compileOnly|runtimeOnly)\s+['\"]([^'\"]+)['\"]")
+    matches = pattern.findall(content)
+
+    print("dependencies {")
+    for _, dep in matches:
+        print(f"    directOnly '{dep}'")
+    print("}")
+    
+# Usage
+extract_dependencies("build.gradle")
