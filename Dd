@@ -1,0 +1,71 @@
+import json
+import os
+import re
+
+# Mapping known artifact name prefixes to group IDs
+GROUP_MAP = {
+    "axis2": "org.apache.axis2",
+    "axiom": "org.apache.ws.commons.axiom",
+    "connector-api": "javax.resource",
+    "commons-io": "commons-io",
+    "commons-lang": "commons-lang",
+    "commons-lang3": "org.apache.commons",
+    "commons-logging": "commons-logging",
+    "commons-pool2": "org.apache.commons",
+    "commons-dbcp2": "org.apache.commons",
+    "xercesImpl": "xerces",
+    "slf4j": "org.slf4j",
+    "logback": "ch.qos.logback",
+    "guava": "com.google.guava",
+    "wsdl4j": "wsdl4j",
+    "neethi": "org.apache.neethi",
+    "woden": "org.apache.woden",
+    "xmlschema": "org.apache.ws.commons.schema",
+    "jaxen": "jaxen",
+    "junit": "junit",
+    "velocity": "org.apache.velocity",
+    "javax.servlet": "javax.servlet",
+    "javax.json": "javax.json",
+    "jakarta": "jakarta",
+    "geronimo": "org.apache.geronimo",
+    "encoder": "org.apache.commons",
+    "clientinterface": "custom.client"
+    # Add more as needed
+}
+
+def get_group(artifact):
+    for key in GROUP_MAP:
+        if artifact.lower().startswith(key.lower()):
+            return GROUP_MAP[key]
+    return "manual.group"
+
+def extract_dependencies(json_file):
+    with open(json_file) as f:
+        data = json.load(f)
+
+    jar_list = data.get("run_time", [])
+    deps = []
+
+    for jar in jar_list:
+        if not jar.endswith(".jar"):
+            continue  # Skip non-jar files
+
+        jar_name = os.path.basename(jar).replace(".jar", "")
+        match = re.match(r"(.+)-(\d[\w\.\-]*)$", jar_name)
+        if match:
+            artifact, version = match.groups()
+            group = get_group(artifact)
+            deps.append(f"directOnly '{group}:{artifact}:{version}'")
+        else:
+            deps.append(f"directOnly 'manual.group:{jar_name}:UNKNOWN'")
+
+    return deps
+
+# === Run ===
+json_file = "dependencies.json"  # Make sure this is the actual path
+deps = extract_dependencies(json_file)
+
+print("dependencies {")
+for dep in sorted(deps):
+    print(f"    {dep}")
+print("}")
