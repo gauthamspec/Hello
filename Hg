@@ -1,0 +1,21 @@
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenCentral()
+}
+
+configurations {
+    directOnly
+}
+
+dependencies {
+    directOnly 'org.apache.commons:commons-lang3:3.12.0'
+    directOnly 'com.google.guava:guava:31.1-jre'
+}
+
+task copyDirectJars(type: Copy) {
+    from configurations.directOnly
+    into "$buildDir/direct-jars"
+}
