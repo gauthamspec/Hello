@@ -1,0 +1,43 @@
+import json
+import os
+import re
+
+def guess_group_artifact_version(jar_name):
+    jar_name = jar_name.replace(".jar", "")
+    parts = jar_name.split("-")
+    
+    # Guess version by pattern: digits start
+    for i in range(len(parts)-1, 0, -1):
+        if re.match(r"^\d", parts[i]):
+            artifact = "-".join(parts[:i])
+            version = "-".join(parts[i:])
+            return artifact, version
+    return jar_name, "unknown"
+
+def build_gradle_style_dependency(artifact, version, group_hint=None):
+    group = group_hint or "manual.group"  # fallback
+    return f"directOnly '{group}:{artifact}:{version}'"
+
+def parse_runtime_jars_from_json(json_file):
+    with open(json_file) as f:
+        data = json.load(f)
+
+    jar_list = data.get("run_time", [])
+    output_lines = []
+
+    for jar in jar_list:
+        base = os.path.basename(jar)
+        artifact, version = guess_group_artifact_version(base)
+        gradle_dep = build_gradle_style_dependency(artifact, version)
+        output_lines.append(gradle_dep)
+
+    return output_lines
+
+# === Run Script ===
+json_path = "dependencies.json"
+lines = parse_runtime_jars_from_json(json_path)
+
+print("dependencies {")
+for line in sorted(lines):
+    print(f"    {line}")
+print("}")
