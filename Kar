@@ -1,0 +1,33 @@
+import json
+import os
+import re
+
+def extract_from_custom_dependencies_json(file_path):
+    with open(file_path, 'r') as f:
+        data = json.load(f)
+
+    jars = data.get("run_time", [])
+    deps = set()
+
+    for jar in jars:
+        jar_name = os.path.basename(jar).replace(".jar", "")
+        # Try to split on the last dash to get artifact and version
+        match = re.match(r"(.+)-(\d[\w\.\-]*)$", jar_name)
+        if match:
+            artifact, version = match.groups()
+            deps.add(f"{artifact}:{version}")
+        else:
+            deps.add(jar_name)  # fallback: raw jar name without extension
+
+    return deps
+
+def print_dependencies_block(deps):
+    print("dependencies {")
+    for dep in sorted(deps):
+        print(f"    directOnly '{dep}'")
+    print("}")
+
+# === RUN ===
+json_file = "dependencies.json"
+json_deps = extract_from_custom_dependencies_json(json_file)
+print_dependencies_block(json_deps)
