@@ -1,0 +1,43 @@
+import re
+import json
+import os
+
+def clean_dependency_string(dep):
+    dep = dep.strip()
+    dep = re.sub(r"@jar", "", dep)
+    return dep
+
+def extract_from_dependencies_json(file_path):
+    with open(file_path, 'r') as f:
+        data = json.load(f)
+
+    deps = set()
+
+    if isinstance(data, list):
+        for d in data:
+            if isinstance(d, str):
+                dep = os.path.basename(d).replace(".jar", "")
+                if ":" in dep:
+                    # Already Maven style
+                    deps.add(dep)
+                else:
+                    # Convert `guava-31.1-jre` to `guava:31.1-jre`
+                    match = re.match(r"(.+)-(\d+\..+)", dep)
+                    if match:
+                        deps.add(f"{match.group(1)}:{match.group(2)}")
+                    else:
+                        deps.add(dep)
+    return deps
+
+def print_combined_dependencies_block(gradle_deps, json_deps, jar_deps):
+    print("dependencies {")
+    for dep in sorted(gradle_deps.union(json_deps)):
+        print(f"    directOnly '{dep}'")
+    for jar in sorted(jar_deps):
+        print(f"    // runtimeOnly local JAR: {jar}")
+    print("}")
+
+# Skip gradle + jar folder for now if only testing dependencies.json
+json_file = "dependencies.json"
+json_deps = extract_from_dependencies_json(json_file)
+print_combined_dependencies_block(set(), json_deps, set())
