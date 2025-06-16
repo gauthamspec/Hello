@@ -1,0 +1,53 @@
+import json
+import os
+import re
+
+# Map known artifact name prefixes to group IDs
+GROUP_MAP = {
+    "axis2": "org.apache.axis2",
+    "axiom": "org.apache.ws.commons.axiom",
+    "connector": "apache_commons",
+    "connector-api": "javax.resource",
+    "guava": "com.google.guava",
+    "logback": "ch.qos.logback",
+    "hikaricp": "com.zaxxer.hikari",
+    "jackson": "com.fasterxml.jackson.core",
+    "swagger": "io.swagger",
+    "junit": "org.junit.platform",
+    "commons-lang3": "org.apache.commons",
+    "httpclient": "org.apache.httpcomponents"
+}
+
+def get_group(artifact):
+    for key in GROUP_MAP:
+        if artifact.lower().startswith(key.lower()):
+            return GROUP_MAP[key]
+    return "manual.group"  # fallback
+
+def extract_dependencies(json_file):
+    with open(json_file) as f:
+        data = json.load(f)
+
+    jar_list = data.get("run_time", [])
+    deps = []
+
+    for jar in jar_list:
+        jar = os.path.basename(jar).replace(".jar", "")
+        match = re.match(r"(.+)-(\d[\w\.\-]*)$", jar)
+        if match:
+            artifact, version = match.groups()
+            group = get_group(artifact)
+            deps.append(f"directOnly '{group}:{artifact}:{version}'")
+        else:
+            deps.append(f"directOnly 'manual.group:{jar}:UNKNOWN'")
+
+    return deps
+
+# === Run ===
+json_file = "dependencies.json"  # Adjust if needed
+deps = extract_dependencies(json_file)
+
+print("dependencies {")
+for dep in sorted(deps):
+    print(f"    {dep}")
+print("}")
