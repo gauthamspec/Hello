@@ -1,0 +1,15 @@
+configurations {
+    directOnly
+}
+
+dependencies {
+    // Add your direct dependencies again here without transitive ones
+    directOnly 'org.apache.commons:commons-lang3:3.12.0'
+    directOnly 'com.google.guava:guava:31.1-jre'
+    // Add other direct dependencies as needed
+}
+
+task copyDirectJars(type: Copy) {
+    from configurations.directOnly
+    into "$buildDir/direct-jars"
+}
