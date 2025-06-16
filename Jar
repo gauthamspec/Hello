@@ -1,0 +1,10 @@
+#!/bin/bash
+mkdir -p cleaned-jars
+for jar in build/direct-jars/*.jar; do
+  name=$(basename "$jar")
+  tmpdir=$(mktemp -d)
+  unzip -q "$jar" -d "$tmpdir"
+  find "$tmpdir" -name "*.jar" -type f -delete  # 🧨 delete nested jars
+  (cd "$tmpdir" && zip -qr "../../cleaned-jars/$name" .)
+  rm -rf "$tmpdir"
+done
