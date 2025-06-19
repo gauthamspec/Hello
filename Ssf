@@ -1,0 +1,25 @@
+import requests
+
+# Jira API endpoint
+jira_url = "https://your-jira-instance.com/rest/api/2/myself"
+
+# Your combined PEM file (certificate + private key)
+pem_file = '/path/to/your_certificate.pem'
+
+# Optional: Path to CA bundle if Jira uses a self-signed cert
+ca_cert = '/path/to/ca-bundle.crt'  # Or use verify=False if you want to skip
+
+try:
+    response = requests.get(jira_url, cert=pem_file, verify=ca_cert)
+
+    if response.status_code == 200:
+        print("Successfully connected to Jira!")
+        print(response.json())
+    else:
+        print(f"Failed with status code {response.status_code}")
+        print(response.text)
+
+except requests.exceptions.SSLError as ssl_err:
+    print("SSL error:", ssl_err)
+except Exception as e:
+    print("Error:", e)
