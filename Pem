@@ -1,0 +1,40 @@
+import requests
+from requests.auth import HTTPBasicAuth
+
+# Jira configuration
+jira_url = "https://your-jira-url.com/rest/api/2/search"
+username = "your-jira-username"
+api_token = "your-jira-api-token"  # or password if applicable
+
+# Path to your PEM certificate file
+cert_file = "/path/to/cert.pem"  # You can also use a tuple: (cert.pem, key.pem) if separate
+
+# Optional: If your PEM file is password protected, requests will prompt unless handled by the OS
+
+# Query parameters (optional)
+params = {
+    "jql": "assignee=currentUser()",
+    "maxResults": 5
+}
+
+try:
+    response = requests.get(
+        jira_url,
+        params=params,
+        auth=HTTPBasicAuth(username, api_token),
+        cert=cert_file,     # Pass a tuple if cert + key are separate
+        verify=True          # Set to False to skip SSL cert verification (not recommended)
+    )
+
+    if response.status_code == 200:
+        print("Connected to Jira successfully!")
+        issues = response.json().get("issues", [])
+        for issue in issues:
+            print(f"{issue['key']}: {issue['fields']['summary']}")
+    else:
+        print(f"Failed to connect. Status: {response.status_code}, Reason: {response.text}")
+
+except requests.exceptions.SSLError as ssl_err:
+    print(f"SSL Error: {ssl_err}")
+except Exception as e:
+    print(f"Error: {e}")
