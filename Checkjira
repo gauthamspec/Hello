@@ -1,0 +1,41 @@
+import urllib3
+import ssl
+import base64
+import json
+
+# Jira server config
+JIRA_URL = "https://your-jira-url.com"
+API_ENDPOINT = "/rest/api/2/search?jql=project=ABC"  # Example endpoint
+USERNAME = "your-username"
+API_TOKEN = "your-api-token"  # Or password (not recommended)
+PEM_CERT = "/path/to/your_client.pem"
+PEM_PASSPHRASE = "your_passphrase"
+
+# Create custom SSL context and load encrypted cert
+ssl_context = ssl.create_default_context()
+ssl_context.load_cert_chain(certfile=PEM_CERT, password=PEM_PASSPHRASE)
+
+# Base64 encode for HTTP Basic Auth
+auth_header = base64.b64encode(f"{USERNAME}:{API_TOKEN}".encode()).decode()
+
+# Create HTTP connection with SSL context
+http = urllib3.PoolManager(ssl_context=ssl_context)
+
+# Perform Jira API GET request
+response = http.request(
+    "GET",
+    f"{JIRA_URL}{API_ENDPOINT}",
+    headers={
+        "Authorization": f"Basic {auth_header}",
+        "Content-Type": "application/json"
+    }
+)
+
+# Handle response
+if response.status == 200:
+    issues = json.loads(response.data.decode("utf-8"))
+    print("Jira Issues:")
+    for issue in issues["issues"]:
+        print(f"- {issue['key']}: {issue['fields']['summary']}")
+else:
+    print(f"Failed: {response.status}\n{response.data.decode('utf-8')}")
