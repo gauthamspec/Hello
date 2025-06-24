@@ -1,0 +1,8 @@
+mkdir -p /tmp/spring-jars
+cd /tmp/spring-jars
+
+# Download official Spring JARs
+wget https://repo1.maven.org/maven2/org/springframework/spring-context/5.3.42/spring-context-5.3.42.jar
+wget https://repo1.maven.org/maven2/org/springframework/spring-messaging/5.3.42/spring-messaging-5.3.42.jar
+wget https://repo1.maven.org/maven2/org/springframework/spring-expression/5.3.42/spring-expression-5.3.42.jar
+wget https://repo1.maven.org/maven2/org/springframework/boot/spring-boot/2.7.24/spring-boot-2.7.24.jar
