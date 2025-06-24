@@ -1,0 +1,58 @@
+
+import os
+import requests
+import zipfile
+
+spring_jars = {
+    "spring-context": "5.3.42",
+    "spring-messaging": "5.3.42",
+    "spring-expression": "5.3.42"
+}
+
+fallback_version = "5.3.41"
+output_dir = "official_spring_jars"
+zip_name = "spring-jars-for-scan.zip"
+
+base_url = "https://repo1.maven.org/maven2/org/springframework/{name}/{version}/{name}-{version}.jar"
+
+def download_jar(name, version):
+    jar_url = base_url.format(name=name, version=version)
+    jar_path = os.path.join(output_dir, f"{name}-{version}.jar")
+    try:
+        print(f"Trying {jar_url} ...")
+        response = requests.get(jar_url, timeout=10)
+        if response.status_code == 200:
+            with open(jar_path, "wb") as f:
+                f.write(response.content)
+            print(f"âœ… Downloaded: {jar_path}")
+            return jar_path
+        else:
+            print(f"âŒ Not found: {name}-{version}")
+            return None
+    except Exception as e:
+        print(f"âš ï¸ Error downloading {name}-{version}: {e}")
+        return None
+
+def main():
+    os.makedirs(output_dir, exist_ok=True)
+    downloaded = []
+
+    for name, version in spring_jars.items():
+        path = download_jar(name, version)
+        if not path:
+            print(f"ðŸ” Falling back to {fallback_version} for {name}")
+            path = download_jar(name, fallback_version)
+        if path:
+            downloaded.append(path)
+
+    # Zip the results
+    if downloaded:
+        with zipfile.ZipFile(zip_name, 'w') as zipf:
+            for file in downloaded:
+                zipf.write(file, os.path.basename(file))
+        print(f"âœ… All JARs zipped into: {zip_name}")
+    else:
+        print("âŒ No JARs downloaded.")
+
+if __name__ == "__main__":
+    main()
