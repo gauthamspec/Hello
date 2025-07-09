@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# 🛠️ Set your Jenkins workspace path here
+JENKINS_WORKSPACE_DIR="/var/lib/jenkins/workspace"
+
+# 🗂️ List of JARs to search for (add more if needed)
+JAR_NAMES=(
+  "kws-25.0.109.jar"
+  "jcibw-25.0.109.jar"
+  "jci-25.0.109.jar"
+  "korframework-25.0.109.jar"
+  "korparametertables-25.0.109.jar"
+  "korconfigurator-25.0.109.jar"
+  "korlogger-25.0.109.jar"
+  "kordecrypt-25.0.109.jar"
+)
+
+echo "🔍 Scanning Jenkins jobs in: $JENKINS_WORKSPACE_DIR"
+echo "Looking for JARs:"
+printf ' - %s\n' "${JAR_NAMES[@]}"
+echo "--------------------------------------------------"
+
+# Loop through each Jenkins job directory
+for job_dir in "$JENKINS_WORKSPACE_DIR"/*; do
+  if [ -d "$job_dir" ]; then
+    job_name=$(basename "$job_dir")
+    found_any=false
+
+    for jar in "${JAR_NAMES[@]}"; do
+      matches=$(find "$job_dir" -type f -name "$jar" 2>/dev/null)
+
+      if [ -n "$matches" ]; then
+        if [ "$found_any" = false ]; then
+          echo "✅ Job: $job_name"
+          found_any=true
+        fi
+        echo "$matches"
+      fi
+    done
+
+    if [ "$found_any" = true ]; then
+      echo "--------------------------------------------------"
+    fi
+  fi
+done
