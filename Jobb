@@ -1,0 +1,43 @@
+#!/bin/bash
+
+# 🛠 Jenkins workspace path
+JENKINS_WORKSPACE_DIR="/var/lib/jenkins/workspace"
+
+# 🔍 JAR name prefixes (no version)
+JAR_PREFIXES=(
+  "kws"
+  "jcibw"
+  "jci"
+  "korframework"
+  "korparametertables"
+  "korconfigurator"
+  "korlogger"
+  "kordecrypt"
+)
+
+# 📋 To store matching job names
+matched_jobs=()
+
+echo "🔍 Scanning Jenkins workspaces for matching JARs..."
+echo "Matching any JARs starting with: ${JAR_PREFIXES[*]}"
+echo "--------------------------------------------------"
+
+# Loop through all Jenkins job directories
+for job_dir in "$JENKINS_WORKSPACE_DIR"/*; do
+  if [ -d "$job_dir" ]; then
+    job_name=$(basename "$job_dir")
+
+    for prefix in "${JAR_PREFIXES[@]}"; do
+      # Check if any matching JAR is found
+      if find "$job_dir" -type f -name "${prefix}-*.jar" | grep -q .; then
+        matched_jobs+=("$job_name")
+        break  # Found a match, no need to check other prefixes
+      fi
+    done
+  fi
+done
+
+# 📢 Output summary
+echo ""
+echo "✅ Jobs using specified JARs (version ignored):"
+printf '%s\n' "${matched_jobs[@]}"
