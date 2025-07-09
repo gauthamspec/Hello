@@ -1,0 +1,46 @@
+#!/bin/bash
+
+# 🛠️ Set Jenkins workspace path
+JENKINS_WORKSPACE_DIR="/var/lib/jenkins/workspace"
+
+# 🔍 JAR name prefixes (no version)
+JAR_PREFIXES=(
+  "kws"
+  "jcibw"
+  "jci"
+  "korframework"
+  "korparametertables"
+  "korconfigurator"
+  "korlogger"
+  "kordecrypt"
+)
+
+echo "🔍 Scanning Jenkins jobs in: $JENKINS_WORKSPACE_DIR"
+echo "Matching any JARs that start with:"
+printf ' - %s-*.jar\n' "${JAR_PREFIXES[@]}"
+echo "--------------------------------------------------"
+
+# Loop through all Jenkins jobs
+for job_dir in "$JENKINS_WORKSPACE_DIR"/*; do
+  if [ -d "$job_dir" ]; then
+    job_name=$(basename "$job_dir")
+    found_any=false
+
+    for prefix in "${JAR_PREFIXES[@]}"; do
+      # Match jar files like korlogger-*.jar
+      matches=$(find "$job_dir" -type f -name "${prefix}-*.jar" 2>/dev/null)
+
+      if [ -n "$matches" ]; then
+        if [ "$found_any" = false ]; then
+          echo "✅ Job: $job_name"
+          found_any=true
+        fi
+        echo "$matches"
+      fi
+    done
+
+    if [ "$found_any" = true ]; then
+      echo "--------------------------------------------------"
+    fi
+  fi
+done
