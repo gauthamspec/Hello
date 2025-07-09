@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# Directory where Jenkins workspaces are stored
+JENKINS_WORKSPACE_DIR="/var/lib/jenkins/workspace"
+
+# JAR name pattern (adjust based on your jars)
+JAR_PATTERN="25.0.109.jar"
+
+echo "🔍 Searching for JARs matching *$JAR_PATTERN* in Jenkins workspaces..."
+
+# Loop through all job workspaces
+for job in "$JENKINS_WORKSPACE_DIR"/*; do
+    if [ -d "$job" ]; then
+        MATCHES=$(find "$job" -type f -name "*$JAR_PATTERN*" 2>/dev/null)
+        if [ -n "$MATCHES" ]; then
+            echo "✅ Job: $(basename "$job") is using:"
+            echo "$MATCHES"
+            echo "----------------------------------------"
+        fi
+    fi
+done
