@@ -1,0 +1,62 @@
+#!/bin/bash
+
+# ==== CONFIGURATION ====
+ACTIVEMQ_HOME="/usr/local/activemq"     # Change this if your path is different
+ACTIVEMQ_BIN="$ACTIVEMQ_HOME/bin/activemq"
+PIDFILE="/var/run/activemq.pid"
+LOGFILE="/var/log/activemq-start.log"
+JAVA_HOME="/usr/lib/jvm/java-11-openjdk-amd64"  # Adjust based on your system
+
+# ==== FUNCTION DEFINITIONS ====
+start_activemq() {
+    echo "[$(date)] Starting ActiveMQ..." | tee -a "$LOGFILE"
+    nohup "$ACTIVEMQ_BIN" start >> "$LOGFILE" 2>&1 &
+    echo $! > "$PIDFILE"
+    echo "[$(date)] ActiveMQ started with PID $(cat $PIDFILE)" | tee -a "$LOGFILE"
+}
+
+stop_activemq() {
+    echo "[$(date)] Stopping ActiveMQ..." | tee -a "$LOGFILE"
+    "$ACTIVEMQ_BIN" stop >> "$LOGFILE" 2>&1
+    rm -f "$PIDFILE"
+}
+
+status_activemq() {
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
+        echo "ActiveMQ is running with PID $(cat $PIDFILE)"
+    else
+        echo "ActiveMQ is not running."
+    fi
+}
+
+# ==== MAIN LOGIC ====
+case "$1" in
+    start)
+        if [ -f "$PIDFILE" ] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
+            echo "ActiveMQ is already running (PID: $(cat $PIDFILE))."
+            exit 0
+        fi
+        start_activemq
+        ;;
+    stop)
+        if [ ! -f "$PIDFILE" ]; then
+            echo "No PID file found. Is ActiveMQ running?"
+            exit 1
+        fi
+        stop_activemq
+        ;;
+    restart)
+        stop_activemq
+        sleep 2
+        start_activemq
+        ;;
+    status)
+        status_activemq
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+
+exit 0
