@@ -1,0 +1,230 @@
+import os
+import re
+import csv
+import shutil
+import requests
+import subprocess
+import urllib3
+from dotenv import load_dotenv
+
+# Disable SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+load_dotenv()
+
+BASE_URL = os.getenv("BITBUCKET_URL")
+USERNAME = os.getenv("BITBUCKET_USER")
+PASSWORD = os.getenv("BITBUCKET_TOKEN")
+BRANCHES = [b.strip() for b in os.getenv("BRANCHES", "").split(",") if b.strip()]
+
+PATTERNS = [
+    r"de\.kordoba\.legacy\.jci",
+    r"de\.kordoba\.framework\.legacy\:korframework",
+    r"de\.kordoba\.framework\.legacy\:korwelframework",
+    r"de\.kordoba\.framework\.legacy\:korconfigurator",
+    r"de\.kordoba\.framework\.common\.legacy\:korlogger",
+    r"de\.kordoba\.framework\.crypto\.legacy\:kordecrypt",
+    r"de\.kordoba\.framework\.common\.legacy\:korparametertables"
+]
+
+CSV_FILE = "matched_patterns.csv"
+CLONE_DIR = "./tmp_repos"
+
+def run_cmd(cmd, cwd=None):
+    result = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, text=True)
+    return result.stdout.strip() + result.stderr.strip()
+
+def get_projects():
+    print("ðŸ” Fetching all projects...")
+    projects = []
+    url = f"{BASE_URL}/rest/api/1.0/projects?limit=100"
+    while url:
+        r = requests.get(url, auth=(USERNAME, PASSWORD), verify=False)
+        r.raise_for_status()
+        data = r.json()
+        for proj in data["values"]:
+            projects.append(proj["key"])
+        url = data.get("nextPageStart")
+        if url:
+            url = f"{BASE_URL}/rest/api/1.0/projects?limit=100&start={url}"
+    return projects
+
+def get_repos(project_key):
+    repos = []
+    url = f"{BASE_URL}/rest/api/1.0/projects/{project_key}/repos?limit=100"
+    while url:
+        r = requests.get(url, auth=(USERNAME, PASSWORD), verify=False)
+        r.raise_for_status()
+        data = r.json()
+        for repo in data["values"]:
+            repos.append(repo["slug"])
+        url = data.get("nextPageStart")
+        if url:
+            url = f"{BASE_URL}/rest/api/1.0/projects/{project_key}/repos?limit=100&start={url}"
+        else:
+            url = None
+    return repos
+
+def get_repo_branches(project_key, repo_slug):
+    branches = []
+    url = f"{BASE_URL}/rest/api/1.0/projects/{project_key}/repos/{repo_slug}/branches?limit=100"
+    while url:
+        r = requests.get(url, auth=(USERNAME, PASSWORD), verify=False)
+        r.raise_for_status()
+        data = r.json()
+        for branch in data["values"]:
+            branches.append(branch["displayId"])
+        url = data.get("nextPageStart")
+        if url:
+            url = f"{BASE_URL}/rest/api/1.0/projects/{project_key}/repos/{repo_slug}/branches?limit=100&start={url}"
+        else:
+            url = None
+    return branches
+
+def clone_repo(project_key, repo_slug, branch):
+    safe_branch = re.sub(r'[^a-zA-Z0-9_-]', '_', branch)
+    repo_dir = f"{CLONE_DIR}/{project_key}_{repo_slug}_{safe_branch}"
+    if os.path.exists(repo_dir):
+        shutil.rmtree(repo_dir)
+    repo_url = f"{BASE_URL}/scm/{project_key}/{repo_slug}.git"
+    clone_cmd = (
+        f"GIT_SSL_NO_VERIFY=true git clone -b {branch} --single-branch "
+        f"https://{USERNAME}:{PASSWORD}@{repo_url[8:]} {repo_dir}"
+    )
+    print(f"ðŸš€ Cloning {repo_url}@{branch}")
+    result = run_cmd(clone_cmd)
+    if not os.path.exists(repo_dir):
+        print(f"âŒ Clone failed for {project_key}/{repo_slug}@{branch}")
+        print("ðŸ“¥ Git error output:")
+        print(result)
+        return None
+    return repo_dir
+
+def search_patterns(filepath):
+    matches = []
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            for num, line in enumerate(f, 1):
+                for pattern in PATTERNS:
+                    if re.search(pattern, line):
+                        matches.append((num, line.strip(), pattern))
+    except Exception:
+        pass
+    return matches
+
+def scan_repo(project, repo, branch):
+    results = []
+    path = clone_repo(project, repo, branch)
+    if not path:
+        return []
+    for root, _, files in os.walk(path):
+        for file in files:
+            if file.endswith(('.java', '.gradle', '.xml', '.properties', '.txt')):
+                full_path = os.path.join(root, file)
+                for lineno, linetext, pattern in search_patterns(full_path):
+                    results.append({
+                        "Project": project,
+                        "Repo": repo,
+                        "Branch": branch,
+                        "File": os.path.relpath(full_path, path),
+                        "Line Number": lineno,
+                        "Matched Pattern": pattern,
+                        "Line Text": linetext
+                    })
+    return results
+
+# -------- Variable Resolution Extension --------
+
+def load_properties_from_file(filepath):
+    props = {}
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    key, value = line.split("=", 1)
+                    props[key.strip()] = value.strip()
+    except Exception:
+        pass
+    return props
+
+def find_all_properties(base_path):
+    property_map = {}
+    for root, _, files in os.walk(base_path):
+        for file in files:
+            if file.endswith(".properties") or file == "gradle.properties":
+                props = load_properties_from_file(os.path.join(root, file))
+                property_map.update(props)
+    return property_map
+
+def resolve_variables_in_file(filepath, properties):
+    variable_pattern = re.compile(r"\$\{([a-zA-Z0-9_.\-]+)\}")
+    resolved_lines = []
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            for num, line in enumerate(f, 1):
+                matches = variable_pattern.findall(line)
+                resolved_line = line
+                for var in matches:
+                    if var in properties:
+                        resolved_line = resolved_line.replace(f"${{{var}}}", properties[var])
+                if resolved_line != line:
+                    resolved_lines.append((filepath, num, line.strip(), resolved_line.strip()))
+    except Exception:
+        pass
+    return resolved_lines
+
+def resolve_all_variables():
+    print("\nðŸ”§ Resolving variable references in scanned files...")
+    properties = find_all_properties(CLONE_DIR)
+    all_resolved = []
+    for root, _, files in os.walk(CLONE_DIR):
+        for file in files:
+            if file.endswith(('.java', '.gradle', '.xml', '.properties', '.txt')):
+                full_path = os.path.join(root, file)
+                resolved = resolve_variables_in_file(full_path, properties)
+                all_resolved.extend(resolved)
+    if all_resolved:
+        print("\nðŸ” Resolved Variables:")
+        for filepath, lineno, original, resolved in all_resolved:
+            print(f"{filepath} [Line {lineno}]")
+            print(f"  âŒ {original}")
+            print(f"  âœ… {resolved}\n")
+    else:
+        print("âœ… No variable references found or resolved.")
+
+# ------------------------------------------------
+
+def main():
+    os.makedirs(CLONE_DIR, exist_ok=True)
+    all_results = []
+    projects = get_projects()
+    for project in projects:
+        repos = get_repos(project)
+        for repo in repos:
+            repo_branches = get_repo_branches(project, repo)
+            for branch in repo_branches:
+                match = False
+                for b in BRANCHES:
+                    if b.endswith("*") and branch.startswith(b[:-1]):
+                        match = True
+                        break
+                    elif branch == b:
+                        match = True
+                        break
+                if not match:
+                    continue
+                print(f"ðŸ”Ž Scanning {project}/{repo} [{branch}]")
+                all_results.extend(scan_repo(project, repo, branch))
+    with open(CSV_FILE, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=["Project", "Repo", "Branch", "File", "Line Number", "Matched Pattern", "Line Text"])
+        writer.writeheader()
+        writer.writerows(all_results)
+
+    # Resolve variables at the end
+    resolve_all_variables()
+
+    print(f"âœ… Done. Results saved to {CSV_FILE}")
+
+if __name__ == "__main__":
+    main()
