@@ -1,0 +1,14 @@
+#!/bin/bash
+
+PIDFILE="/var/run/activemq.pid"
+
+if [ -f "$PIDFILE" ] && kill -0 $(cat "$PIDFILE") 2>/dev/null; then
+    echo "ActiveMQ is already running (PID: $(cat $PIDFILE))"
+    exit 1
+fi
+
+# Start ActiveMQ
+/path/to/activemq/bin/activemq start
+
+# Save new PID
+echo $! > "$PIDFILE"
