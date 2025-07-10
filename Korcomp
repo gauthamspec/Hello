@@ -1,0 +1,78 @@
+import os
+import re
+import csv
+import shutil
+import subprocess
+from input_repos import REPOS
+
+# Patterns from your image (simplified to match package paths)
+PATTERNS = [
+    r"de\.kordoba\.legacy\.jci",
+    r"de\.kordoba\.framework\.legacy\:korframework",
+    r"de\.kordoba\.framework\.legacy\:korwelframework",
+    r"de\.kordoba\.framework\.legacy\:korconfigurator",
+    r"de\.kordoba\.framework\.common\.legacy\:korlogger",
+    r"de\.kordoba\.framework\.crypto\.legacy\:kordecrypt",
+    r"de\.kordoba\.framework\.common\.legacy\:korparametertables"
+]
+
+OUTPUT_CSV = "matched_patterns.csv"
+
+def run_cmd(cmd, cwd=None):
+    result = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, text=True)
+    return result.stdout.strip()
+
+def clone_and_checkout(repo_name, url, branch):
+    path = f"./tmp_repos/{repo_name}_{branch}"
+    if os.path.exists(path):
+        shutil.rmtree(path)
+    run_cmd(f"git clone -b {branch} --single-branch {url} {path}")
+    return path
+
+def search_patterns_in_file(filepath, patterns):
+    results = []
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            for line_number, line in enumerate(f, 1):
+                for pattern in patterns:
+                    if re.search(pattern, line):
+                        results.append((line_number, line.strip(), pattern))
+    except Exception as e:
+        print(f"Error reading {filepath}: {e}")
+    return results
+
+def scan_repo(repo_name, repo_info):
+    matches = []
+    for branch in repo_info["branches"]:
+        print(f"Scanning {repo_name} [{branch}]...")
+        path = clone_and_checkout(repo_name, repo_info["url"], branch)
+        for root, _, files in os.walk(path):
+            for file in files:
+                if file.endswith(('.gradle', '.java', '.xml', '.properties', '.txt')):
+                    filepath = os.path.join(root, file)
+                    found = search_patterns_in_file(filepath, PATTERNS)
+                    for line_number, line_text, pattern in found:
+                        matches.append({
+                            "Repo": repo_name,
+                            "Branch": branch,
+                            "File": os.path.relpath(filepath, path),
+                            "Line Number": line_number,
+                            "Matched Pattern": pattern,
+                            "Line Text": line_text
+                        })
+        shutil.rmtree(path)
+    return matches
+
+def write_to_csv(data):
+    with open(OUTPUT_CSV, mode='w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=["Repo", "Branch", "File", "Line Number", "Matched Pattern", "Line Text"])
+        writer.writeheader()
+        writer.writerows(data)
+    print(f"\n✅ Output written to: {OUTPUT_CSV}")
+
+if __name__ == "__main__":
+    os.makedirs("./tmp_repos", exist_ok=True)
+    all_matches = []
+    for repo_name, repo_info in REPOS.items():
+        all_matches.extend(scan_repo(repo_name, repo_info))
+    write_to_csv(all_matches)
