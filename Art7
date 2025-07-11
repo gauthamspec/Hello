@@ -1,0 +1,94 @@
+import subprocess
+import csv
+import json
+from datetime import datetime, timedelta
+from dateutil import parser  # ✅ Handles timezones like +02:00 or Z
+
+# Configuration
+USERNAME = "your-username"         # 🔁 Replace with your Artifactory username
+API_KEY = "your-api-key"           # 🔁 Replace with your API key
+REPO = "korcomponents"             # ✅ Set target repository
+JFROG_URL = "https://kordobaartifactory.fnfis.com/artifactory"
+OUTPUT_FILE = "downloaded_artifacts_last_3_years.csv"
+INCLUDE_UNTOUCHED = False          # ✅ Set to True if you want to include artifacts with no downloads
+
+# Cutoff date = 3 years ago
+cutoff_date = datetime.utcnow() - timedelta(days=3 * 365)
+
+# AQL with stat.downloaded (if available)
+AQL_QUERY = '''
+items.find({
+  "repo": "%s",
+  "type": "file",
+  "name": {"$match": "*.jar"}
+}).include("name", "repo", "path", "stat.downloaded")
+''' % REPO
+
+def run_curl_aql():
+    curl_command = [
+        "curl", "-s", "-u", f"{USERNAME}:{API_KEY}",
+        "-X", "POST",
+        f"{JFROG_URL}/api/search/aql",
+        "-H", "Content-Type: text/plain",
+        "-d", AQL_QUERY,
+        "-k"
+    ]
+
+    print(f"📡 Running curl for repo: {REPO}")
+    result = subprocess.run(curl_command, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print("❌ Curl failed:", result.stderr)
+        return []
+
+    try:
+        data = json.loads(result.stdout)
+        return data.get("results", [])
+    except Exception as e:
+        print("❌ Failed to parse JSON:", e)
+        print("Raw Output:\n", result.stdout)
+        return []
+
+def export_to_csv(artifacts):
+    with open(OUTPUT_FILE, mode="w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["Repository", "Path", "Artifact", "Downloaded At"])
+
+        for artifact in artifacts:
+            stats = artifact.get("stats", [])
+            name = artifact.get("name")
+
+            if stats and "downloaded" in stats[0]:
+                try:
+                    downloaded_str = stats[0]["downloaded"]
+                    downloaded_date = parser.isoparse(downloaded_str)
+                    if downloaded_date >= cutoff_date:
+                        writer.writerow([
+                            artifact.get("repo"),
+                            artifact.get("path"),
+                            name,
+                            downloaded_date.strftime("%Y-%m-%d %H:%M:%S")
+                        ])
+                except Exception as e:
+                    print(f"⚠️ Skipping {name} due to date parse error: {e}")
+            else:
+                print(f"⚠️ No download info for: {name}")
+                if INCLUDE_UNTOUCHED:
+                    writer.writerow([
+                        artifact.get("repo"),
+                        artifact.get("path"),
+                        name,
+                        "Never Downloaded"
+                    ])
+
+    print(f"\n✅ Results saved to: {OUTPUT_FILE}")
+
+def main():
+    artifacts = run_curl_aql()
+    if artifacts:
+        export_to_csv(artifacts)
+    else:
+        print("⚠️ No artifacts returned or failed to fetch.")
+
+if __name__ == "__main__":
+    main()
