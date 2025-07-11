@@ -1,0 +1,79 @@
+import requests
+import json
+import datetime
+from base64 import b64encode
+
+# ========== CONFIG ========== #
+ARTIFACTORY_URL = "https://your-artifactory-domain/artifactory"
+REPO = "your-repo-name"  # e.g., "libs-release-local"
+USERNAME = "admin"
+API_KEY = "your-api-key"
+DAYS = 7  # Look back window
+OUTPUT_FILE = "artifact_downloads_from_jenkins.csv"
+
+# ========== AQL Query ========== #
+def build_aql_query(repo, days):
+    past_date = (datetime.datetime.utcnow() - datetime.timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    aql = f"""
+items.find({{
+    "repo": "{repo}",
+    "stat.downloaded": {{"$gte": "{past_date}"}}
+}})
+.include("name", "repo", "path", "stat.downloaded_by", "stat.downloaded")
+.sort({{"$desc": ["stat.downloaded"]}})
+"""
+    return aql
+
+# ========== GET DOWNLOADS ========== #
+def get_artifact_downloads():
+    headers = {
+        "Content-Type": "text/plain",
+        "Authorization": f"Basic {b64encode(f'{USERNAME}:{API_KEY}'.encode()).decode()}"
+    }
+    aql_query = build_aql_query(REPO, DAYS)
+    response = requests.post(f"{ARTIFACTORY_URL}/api/search/aql", data=aql_query, headers=headers)
+    
+    if response.status_code != 200:
+        print("AQL Query Failed:", response.text)
+        return []
+
+    data = response.json()
+    results = []
+    for item in data.get("results", []):
+        artifact_path = f"{item['repo']}/{item['path']}/{item['name']}"
+        downloaded_by = item.get("stat", {}).get("downloaded_by", "N/A")
+        timestamp = item.get("stat", {}).get("downloaded", "N/A")
+        job_guess = guess_jenkins_job(downloaded_by)
+        results.append({
+            "artifact": artifact_path,
+            "downloaded_by": downloaded_by,
+            "jenkins_job": job_guess,
+            "timestamp": timestamp
+        })
+    return results
+
+# ========== GUESS JENKINS JOB ========== #
+def guess_jenkins_job(downloaded_by):
+    # Basic heuristics: usernames, tokens, or pattern matches
+    if "jenkins" in downloaded_by.lower():
+        return downloaded_by  # Could enhance to map Jenkins token to job
+    return "Unknown"
+
+# ========== WRITE CSV ========== #
+def write_csv(results):
+    import csv
+    with open(OUTPUT_FILE, "w", newline="") as csvfile:
+        fieldnames = ["artifact", "timestamp", "downloaded_by", "jenkins_job"]
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in results:
+            writer.writerow(row)
+
+# ========== MAIN ========== #
+if __name__ == "__main__":
+    artifacts = get_artifact_downloads()
+    if artifacts:
+        write_csv(artifacts)
+        print(f"\n✅ {len(artifacts)} downloads written to: {OUTPUT_FILE}")
+    else:
+        print("❌ No downloads found or query failed.")
