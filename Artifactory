@@ -1,0 +1,63 @@
+import requests
+import csv
+from datetime import datetime, timedelta
+
+# ✅ Artifactory configuration
+JFROG_URL = "https://your-artifactory-domain/artifactory"
+USERNAME = "your-username"
+API_KEY = "your-api-key"  # Or password
+REPOSITORIES = ["libs-release-local", "libs-snapshot-local"]  # Replace with your actual repos
+OUTPUT_FILE = "downloaded_artifacts_last_3_years.csv"
+
+# ✅ Time window: 3 years
+cutoff_date = datetime.utcnow() - timedelta(days=3 * 365)
+
+# 🔍 AQL query runner
+def run_aql_query(aql):
+    url = f"{JFROG_URL}/api/search/aql"
+    headers = {"Content-Type": "text/plain"}
+    response = requests.post(url, headers=headers, auth=(USERNAME, API_KEY), data=aql)
+    response.raise_for_status()
+    return response.json().get('results', [])
+
+# 🧠 Build AQL query per repo
+def get_aql_for_repo(repo):
+    return f"""
+    items.find({{
+        "repo": "{repo}",
+        "type": "file",
+        "name": {{"$match": "*.jar"}}
+    }}).include("name", "repo", "path", "actual_downloads", "lastDownloaded")
+    """
+
+# 🧾 Main function
+def main():
+    with open(OUTPUT_FILE, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(["Repository", "Path", "Artifact", "Last Downloaded"])
+
+        for repo in REPOSITORIES:
+            print(f"Scanning repo: {repo}")
+            aql = get_aql_for_repo(repo)
+            try:
+                artifacts = run_aql_query(aql)
+                for artifact in artifacts:
+                    last_downloaded = artifact.get("lastDownloaded")
+                    if last_downloaded:
+                        last_downloaded_date = datetime.strptime(
+                            last_downloaded, "%Y-%m-%dT%H:%M:%S.%fZ"
+                        )
+                        if last_downloaded_date >= cutoff_date:
+                            writer.writerow([
+                                artifact["repo"],
+                                artifact["path"],
+                                artifact["name"],
+                                last_downloaded_date.strftime("%Y-%m-%d %H:%M:%S")
+                            ])
+            except Exception as e:
+                print(f"Error while querying {repo}: {e}")
+
+    print(f"\n✅ Scan complete. Results saved to: {OUTPUT_FILE}")
+
+if __name__ == "__main__":
+    main()
