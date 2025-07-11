@@ -1,0 +1,71 @@
+import requests
+import csv
+from datetime import datetime, timedelta
+import urllib3
+
+# Disable SSL certificate warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Configuration
+JFROG_URL = "https://kordobaartifactory.fnfis.com/artifactory"  # ✅ No trailing slash
+USERNAME = "your-username"       # 🔁 Replace with your actual Artifactory username
+API_KEY = "your-api-key"         # 🔁 Replace with your actual API key
+REPOSITORIES = ["korcomponents", "korcomponents-dev"]
+OUTPUT_FILE = "downloaded_artifacts_last_3_years.csv"
+
+# Define 3-year cutoff
+cutoff_date = datetime.utcnow() - timedelta(days=3 * 365)
+
+# AQL builder for a given repo
+def get_aql_for_repo(repo):
+    return f"""
+items.find({{
+    "repo": "{repo}",
+    "type": "file",
+    "name": {{"$match": "*.jar"}}
+}}).include("name", "repo", "path", "lastDownloaded")
+"""
+
+# Run AQL query
+def run_aql_query(aql):
+    url = f"{JFROG_URL}/api/search/aql"
+    headers = {"Content-Type": "text/plain"}
+
+    print(f"🔎 Querying: {url}")
+    print("📤 AQL:\n", aql)
+
+    response = requests.post(url, headers=headers, auth=(USERNAME, API_KEY), data=aql, verify=False)
+    response.raise_for_status()
+    return response.json().get('results', [])
+
+# Main script
+def main():
+    with open(OUTPUT_FILE, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(["Repository", "Path", "Artifact", "Last Downloaded"])
+
+        for repo in REPOSITORIES:
+            print(f"\n📦 Scanning repo: {repo}")
+            aql = get_aql_for_repo(repo)
+            try:
+                artifacts = run_aql_query(aql)
+                for artifact in artifacts:
+                    last_downloaded = artifact.get("lastDownloaded")
+                    if last_downloaded:
+                        last_downloaded_date = datetime.strptime(
+                            last_downloaded, "%Y-%m-%dT%H:%M:%S.%fZ"
+                        )
+                        if last_downloaded_date >= cutoff_date:
+                            writer.writerow([
+                                artifact["repo"],
+                                artifact["path"],
+                                artifact["name"],
+                                last_downloaded_date.strftime("%Y-%m-%d %H:%M:%S")
+                            ])
+            except Exception as e:
+                print(f"❌ Error while querying {repo}: {e}")
+
+    print(f"\n✅ Scan complete. Results saved to: {OUTPUT_FILE}")
+
+if __name__ == "__main__":
+    main()
