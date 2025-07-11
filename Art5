@@ -1,0 +1,77 @@
+import subprocess
+import csv
+import json
+from datetime import datetime, timedelta
+
+# Configuration
+USERNAME = "your-username"        # 🔁 Replace with actual Artifactory user
+API_KEY = "your-api-key"          # 🔁 Or password (not recommended)
+REPO = "korcomponents"            # 👈 You can change this to test other repos
+JFROG_URL = "https://kordobaartifactory.fnfis.com/artifactory"
+OUTPUT_FILE = "downloaded_artifacts_last_3_years.csv"
+
+# 3-year cutoff
+cutoff_date = datetime.utcnow() - timedelta(days=3 * 365)
+
+# AQL query string (same as tested in your working curl)
+AQL_QUERY = '''
+items.find({"repo":"%s","type":"file","name":{"$match":"*.jar"}})
+.include("name","repo","path","lastDownloaded")
+''' % REPO
+
+def run_curl_aql():
+    curl_command = [
+        "curl", "-s", "-u", f"{USERNAME}:{API_KEY}",
+        "-X", "POST",
+        f"{JFROG_URL}/api/search/aql",
+        "-H", "Content-Type: text/plain",
+        "-d", AQL_QUERY,
+        "-k"  # Bypass SSL verification
+    ]
+
+    print(f"📡 Running curl for repo: {REPO}")
+    result = subprocess.run(curl_command, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        print("❌ Curl failed:", result.stderr)
+        return []
+
+    try:
+        data = json.loads(result.stdout)
+        return data.get("results", [])
+    except Exception as e:
+        print("❌ Failed to parse JSON:", e)
+        print("Raw Output:\n", result.stdout)
+        return []
+
+def export_to_csv(artifacts):
+    with open(OUTPUT_FILE, mode="w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["Repository", "Path", "Artifact", "Last Downloaded"])
+
+        for artifact in artifacts:
+            last_downloaded = artifact.get("lastDownloaded")
+            if last_downloaded:
+                try:
+                    dt = datetime.strptime(last_downloaded, "%Y-%m-%dT%H:%M:%S.%fZ")
+                    if dt >= cutoff_date:
+                        writer.writerow([
+                            artifact.get("repo"),
+                            artifact.get("path"),
+                            artifact.get("name"),
+                            dt.strftime("%Y-%m-%d %H:%M:%S")
+                        ])
+                except Exception as e:
+                    print(f"⚠️ Skipping artifact with bad date: {e}")
+
+    print(f"\n✅ Results saved to: {OUTPUT_FILE}")
+
+def main():
+    artifacts = run_curl_aql()
+    if artifacts:
+        export_to_csv(artifacts)
+    else:
+        print("⚠️ No artifacts returned or failed to fetch.")
+
+if __name__ == "__main__":
+    main()
