@@ -1,0 +1,72 @@
+import re
+import csv
+from datetime import datetime
+
+# === CONFIGURATION ===
+LOG_FILE = "/opt/jfrog/artifactory/var/log/request.log"   # 🔁 Change to your actual path
+OUTPUT_FILE = "artifact_download_report.csv"
+
+# Optional: Map usernames to Jenkins job names (if applicable)
+JENKINS_USER_MAP = {
+    "jenkins_build_1": "Jenkins Job: Build-App-Prod",
+    "jenkins_deploy": "Jenkins Job: Deploy-Service",
+    "release_user": "Manual Trigger",
+    # Add more if needed
+}
+
+# Optional: limit to certain repo names
+VALID_REPOS = ["korcomponents", "korcomponents-dev"]
+
+# === REGEX to extract downloads ===
+# Example log line:
+# 2025-07-11 10:23:45,123 [http-nio-8081-exec-9] - jenkins_user GET /artifactory/korcomponents/com/example/lib-1.2.3.jar HTTP/1.1 200
+DOWNLOAD_REGEX = re.compile(
+    r'(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+\s+\[.*?\] - (?P<user>\S+)\s+GET\s+/artifactory/(?P<repo>[\w\-]+)(?P<path>/[^\s]+?\.jar)'
+)
+
+def parse_artifactory_logs():
+    downloads = []
+
+    with open(LOG_FILE, "r", encoding="utf-8") as file:
+        for line in file:
+            match = DOWNLOAD_REGEX.search(line)
+            if match:
+                ts_str = match.group("timestamp")
+                user = match.group("user")
+                repo = match.group("repo")
+                path = match.group("path")
+
+                if VALID_REPOS and repo not in VALID_REPOS:
+                    continue  # skip unrelated repos
+
+                try:
+                    timestamp = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    continue  # skip bad timestamp
+
+                jenkins_job = JENKINS_USER_MAP.get(user, "Unknown or Generic Access")
+
+                downloads.append([
+                    timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                    user,
+                    jenkins_job,
+                    f"{repo}{path}"
+                ])
+
+    return downloads
+
+def export_to_csv(data):
+    with open(OUTPUT_FILE, mode="w", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["Downloaded At", "Username", "Jenkins Job", "Artifact Path"])
+        writer.writerows(data)
+
+    print(f"\n✅ Download report written to: {OUTPUT_FILE} ({len(data)} entries)")
+
+def main():
+    print(f"🔍 Scanning Artifactory log: {LOG_FILE}")
+    data = parse_artifactory_logs()
+    export_to_csv(data)
+
+if __name__ == "__main__":
+    main()
