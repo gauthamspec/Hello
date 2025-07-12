@@ -1,0 +1,87 @@
+import requests
+import csv
+import datetime
+from base64 import b64encode
+
+# ======== CONFIG ========
+ARTIFACTORY_URL = "https://your-artifactory-domain/artifactory"
+REPO_PATTERN = "korcomponents*"  # Adjust to your repo name or pattern
+USERNAME = "your-username"
+API_KEY = "your-api-key"
+DAYS_BACK = 7
+OUTPUT_FILE = "jenkins_artifact_downloads.csv"
+
+# Mapping Artifactory user/token to Jenkins job name
+JENKINS_USER_MAP = {
+    "jenkins_release": "Release Pipeline",
+    "build-bot": "Build All Modules",
+    "deploy-job42": "Deploy Job 42",
+    "ci-user": "CI Master",
+    "jenkins": "Default Jenkins Job",
+    "team-alpha": "Alpha Service Build"
+}
+
+# ======== AQL Query ========
+def build_aql_query(repo_pattern, days):
+    since_date = (datetime.datetime.utcnow() - datetime.timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    return f"""
+items.find({{
+  "repo": {{"$match": "{repo_pattern}"}},
+  "stat.downloaded": {{"$gte": "{since_date}"}}
+}})
+.include("name", "repo", "path", "stat.downloaded", "stat.downloaded_by")
+.sort({{"$desc": ["stat.downloaded"]}})
+"""
+
+# ======== Jenkins Mapping ========
+def map_to_jenkins_job(user):
+    for key in JENKINS_USER_MAP:
+        if key.lower() in user.lower():
+            return JENKINS_USER_MAP[key]
+    return "Unknown Jenkins Job"
+
+# ======== Query Artifactory ========
+def fetch_download_data():
+    headers = {
+        "Content-Type": "text/plain",
+        "Authorization": "Basic " + b64encode(f"{USERNAME}:{API_KEY}".encode()).decode()
+    }
+
+    query = build_aql_query(REPO_PATTERN, DAYS_BACK)
+    response = requests.post(f"{ARTIFACTORY_URL}/api/search/aql", data=query, headers=headers)
+
+    if response.status_code != 200:
+        print("❌ AQL query failed:", response.text)
+        return []
+
+    results = []
+    for item in response.json().get("results", []):
+        artifact_path = f"{item['repo']}/{item['path']}/{item['name']}"
+        downloaded_by = item.get("stat", {}).get("downloaded_by", "N/A")
+        timestamp = item.get("stat", {}).get("downloaded", "N/A")
+        jenkins_job = map_to_jenkins_job(downloaded_by)
+        results.append({
+            "artifact": artifact_path,
+            "downloaded_by": downloaded_by,
+            "jenkins_job": jenkins_job,
+            "timestamp": timestamp
+        })
+    return results
+
+# ======== Write CSV ========
+def write_csv(data):
+    with open(OUTPUT_FILE, mode="w", newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=["artifact", "timestamp", "downloaded_by", "jenkins_job"])
+        writer.writeheader()
+        for row in data:
+            writer.writerow(row)
+    print(f"\n✅ CSV written to: {OUTPUT_FILE} ({len(data)} rows)")
+
+# ======== Main ========
+if __name__ == "__main__":
+    print("🔍 Querying Artifactory for Jenkins artifact downloads...")
+    data = fetch_download_data()
+    if data:
+        write_csv(data)
+    else:
+        print("⚠️ No downloads found or AQL query failed.")
