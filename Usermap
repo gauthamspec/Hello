@@ -1,0 +1,46 @@
+import requests
+from xml.etree import ElementTree as ET
+
+# === JENKINS CONFIG ===
+JENKINS_URL = "http://your-jenkins-url"
+JENKINS_USER = "your-jenkins-user"
+JENKINS_API_TOKEN = "your-api-token"
+
+# === GET ALL JOB NAMES ===
+def get_all_jobs():
+    api_url = f"{JENKINS_URL}/api/json?tree=jobs[name,url]"
+    resp = requests.get(api_url, auth=(JENKINS_USER, JENKINS_API_TOKEN))
+    resp.raise_for_status()
+    return resp.json()["jobs"]
+
+# === PARSE JOB CONFIG XML ===
+def extract_artifactory_user(config_xml):
+    tree = ET.fromstring(config_xml)
+    for elem in tree.iter():
+        if "artifactory" in elem.tag.lower() or "credentialsId" in elem.tag.lower():
+            if elem.text and "user" in elem.text.lower():
+                return elem.text
+    return None
+
+# === BUILD THE MAPPING ===
+def generate_user_map():
+    jobs = get_all_jobs()
+    user_map = {}
+    for job in jobs:
+        config_url = f"{job['url']}config.xml"
+        config_resp = requests.get(config_url, auth=(JENKINS_USER, JENKINS_API_TOKEN))
+        if config_resp.status_code == 200:
+            artifactory_user = extract_artifactory_user(config_resp.text)
+            if artifactory_user:
+                user_map[artifactory_user] = job["name"]
+    return user_map
+
+# === MAIN ===
+if __name__ == "__main__":
+    print("🔍 Scanning Jenkins jobs to extract Artifactory users...")
+    mapping = generate_user_map()
+    print("\n✅ JENKINS_USER_MAP:")
+    print("{")
+    for user, job in mapping.items():
+        print(f'    "{user}": "{job}",')
+    print("}")
