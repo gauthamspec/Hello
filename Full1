@@ -1,0 +1,118 @@
+import requests
+import re
+import csv
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ========== CONFIG ==========
+JENKINS_URL = "http://your-jenkins-url"
+JENKINS_USER = "admin"
+JENKINS_API_TOKEN = "your-jenkins-api-token"
+
+ARTIFACTORY_URL = "http://your-artifactory-url/artifactory"
+ARTIFACTORY_REPO = "your-repo-name"
+ARTIFACTORY_USER = "your-artifactory-user"
+ARTIFACTORY_PASSWORD = "your-artifactory-password"
+
+CREDENTIAL_ID_TO_ARTIFACTORY_USER = {
+    "artifactory_username": "jenkins_user1",
+    "artifactory_password": "jenkins_user2"
+}
+
+CSV_FILE = "artifact_downloads_with_jenkins_jobs.csv"
+DOWNLOADER_AUDIT_FILE = "unique_downloaded_by_users.txt"
+# =============================
+
+
+def extract_jenkins_artifactory_user_map():
+    print("🔍 Extracting Jenkins → Artifactory credential mapping...")
+    jenkins_user_map = {}
+    api_url = f"{JENKINS_URL}/api/json?tree=jobs[name,url]"
+    resp = requests.get(api_url, auth=(JENKINS_USER, JENKINS_API_TOKEN), verify=False)
+    jobs = resp.json().get("jobs", [])
+
+    for job in jobs:
+        job_name = job["name"]
+        config_url = f"{job['url']}config.xml"
+        config_resp = requests.get(config_url, auth=(JENKINS_USER, JENKINS_API_TOKEN), verify=False)
+        if config_resp.status_code != 200:
+            continue
+        config_text = config_resp.text
+        match = re.search(r"<credentialsId>(.*?)</credentialsId>", config_text)
+        if match:
+            cred_id = match.group(1).strip()
+            mapped_user = CREDENTIAL_ID_TO_ARTIFACTORY_USER.get(cred_id)
+            if mapped_user:
+                jenkins_user_map[mapped_user] = job_name
+    return jenkins_user_map
+
+
+def fetch_artifact_downloads(jenkins_user_map):
+    print("📦 Fetching Artifactory artifact download records...")
+
+    aql_query = f"""
+    items.find({{
+      "repo": "{ARTIFACTORY_REPO}",
+      "stat.downloaded_by": {{"$ne": null}}
+    }}).include("name", "repo", "path", "stat.downloaded_by", "stat.downloaded", "type")
+    """
+
+    resp = requests.post(
+        f"{ARTIFACTORY_URL}/api/search/aql",
+        auth=(ARTIFACTORY_USER, ARTIFACTORY_PASSWORD),
+        data=aql_query,
+        headers={"Content-Type": "text/plain"},
+        verify=False
+    )
+
+    if resp.status_code != 200:
+        print("❌ Artifactory AQL query failed:")
+        print(resp.text)
+        return []
+
+    results = resp.json().get("results", [])
+    records = []
+    unmatched_users = set()
+
+    for item in results:
+        if item.get("type") != "file":
+            continue
+
+        path = f"{item['repo']}/{item['path']}/{item['name']}"
+        downloaded_by = item.get("stat.downloaded_by", "N/A")
+        downloaded = item.get("stat.downloaded", "N/A")
+        jenkins_job = jenkins_user_map.get(downloaded_by, "Unknown Jenkins Job")
+
+        if jenkins_job == "Unknown Jenkins Job" and downloaded_by != "N/A":
+            unmatched_users.add(downloaded_by)
+
+        records.append({
+            "artifact": path,
+            "downloaded_by": downloaded_by,
+            "jenkins_job": jenkins_job,
+            "timestamp": downloaded
+        })
+
+    # Write unmatched usernames
+    with open(DOWNLOADER_AUDIT_FILE, "w") as f:
+        for user in sorted(unmatched_users):
+            f.write(user + "\n")
+
+    print(f"📝 Downloaded-by audit saved to: {DOWNLOADER_AUDIT_FILE}")
+    return records
+
+
+def write_csv(records):
+    with open(CSV_FILE, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["artifact", "downloaded_by", "jenkins_job", "timestamp"])
+        writer.writeheader()
+        for row in records:
+            writer.writerow(row)
+    print(f"✅ CSV written: {CSV_FILE} ({len(records)} rows)")
+
+
+if __name__ == "__main__":
+    jenkins_user_map = extract_jenkins_artifactory_user_map()
+    print(f"✅ Found {len(jenkins_user_map)} Jenkins Artifactory users")
+    records = fetch_artifact_downloads(jenkins_user_map)
+    write_csv(records)
