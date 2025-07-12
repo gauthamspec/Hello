@@ -1,0 +1,142 @@
+import requests
+import xml.etree.ElementTree as ET
+import datetime
+import csv
+from base64 import b64encode
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# === CONFIGURATION ===
+JENKINS_URL = "http://your-jenkins-url"
+JENKINS_USER = "your-jenkins-user"
+JENKINS_API_TOKEN = "your-jenkins-api-token"
+
+CREDENTIALS_XML_PATH = "/var/lib/jenkins/credentials.xml"  # Adjust for your server
+ARTIFACTORY_URL = "https://your-artifactory-domain/artifactory"
+ARTIFACTORY_USER = "your-artifactory-user"
+ARTIFACTORY_API_KEY = "your-artifactory-api-key"
+REPO_PATTERN = "korcomponents*"
+DAYS_BACK = 7
+OUTPUT_CSV = "artifact_downloads_with_jenkins_job.csv"
+
+# === STEP 1: Jenkins job → credentialsId ===
+def get_all_jenkins_jobs():
+    api_url = f"{JENKINS_URL}/api/json?tree=jobs[name,url]"
+    resp = requests.get(api_url, auth=(JENKINS_USER, JENKINS_API_TOKEN), verify=False)
+    resp.raise_for_status()
+    return resp.json()["jobs"]
+
+def extract_credentials_id(config_xml):
+    tree = ET.fromstring(config_xml)
+    for elem in tree.iter():
+        if "credentialsid" in elem.tag.lower() and elem.text:
+            return elem.text.strip()
+    return None
+
+def extract_credentials_map():
+    jobs = get_all_jenkins_jobs()
+    job_cred_map = {}
+    for job in jobs:
+        config_url = f"{job['url']}config.xml"
+        resp = requests.get(config_url, auth=(JENKINS_USER, JENKINS_API_TOKEN), verify=False)
+        if resp.status_code == 200:
+            cred_id = extract_credentials_id(resp.text)
+            if cred_id:
+                job_cred_map[cred_id] = job["name"]
+    return job_cred_map
+
+# === STEP 2: credentialsId → Artifactory username ===
+def parse_credentials_file():
+    tree = ET.parse(CREDENTIALS_XML_PATH)
+    root = tree.getroot()
+
+    cred_user_map = {}
+    current_id = None
+    current_user = None
+
+    for elem in root.iter():
+        tag = elem.tag.lower()
+        text = elem.text.strip() if elem.text else ""
+
+        if "id" in tag and text:
+            current_id = text
+        elif "username" in tag and text:
+            current_user = text
+
+        if current_id and current_user:
+            cred_user_map[current_id] = current_user
+            current_id, current_user = None, None
+
+    return cred_user_map
+
+# === STEP 3: Build JENKINS_USER_MAP ===
+def generate_jenkins_user_map():
+    cred_map = extract_credentials_map()
+    user_map = parse_credentials_file()
+    jenkins_user_map = {}
+    for cred_id, job_name in cred_map.items():
+        user = user_map.get(cred_id, "UNKNOWN_USER")
+        jenkins_user_map[user] = job_name
+    return jenkins_user_map
+
+# === STEP 4: Artifactory AQL ===
+def build_aql(repo_pattern, days_back):
+    since = (datetime.datetime.utcnow() - datetime.timedelta(days=days_back)).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    return f"""
+items.find({{
+  "repo": {{"$match": "{repo_pattern}"}},
+  "stat.downloaded": {{"$gte": "{since}"}}
+}})
+.include("name", "repo", "path", "stat.downloaded", "stat.downloaded_by")
+.sort({{"$desc": ["stat.downloaded"]}})
+"""
+
+def fetch_artifact_downloads(jenkins_user_map):
+    headers = {
+        "Content-Type": "text/plain",
+        "Authorization": "Basic " + b64encode(f"{ARTIFACTORY_USER}:{ARTIFACTORY_API_KEY}".encode()).decode()
+    }
+
+    query = build_aql(REPO_PATTERN, DAYS_BACK)
+    url = f"{ARTIFACTORY_URL}/api/search/aql"
+    response = requests.post(url, data=query, headers=headers, verify=False)
+
+    if response.status_code != 200:
+        print("❌ Artifactory AQL query failed:", response.text)
+        return []
+
+    results = []
+    data = response.json().get("results", [])
+    for item in data:
+        artifact_path = f"{item['repo']}/{item['path']}/{item['name']}"
+        downloaded_by = item.get("stat", {}).get("downloaded_by", "N/A")
+        timestamp = item.get("stat", {}).get("downloaded", "N/A")
+        jenkins_job = jenkins_user_map.get(downloaded_by, "Unknown Jenkins Job")
+
+        results.append({
+            "artifact": artifact_path,
+            "downloaded_by": downloaded_by,
+            "jenkins_job": jenkins_job,
+            "timestamp": timestamp
+        })
+    return results
+
+# === STEP 5: CSV Output ===
+def write_csv(data):
+    with open(OUTPUT_CSV, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["artifact", "downloaded_by", "jenkins_job", "timestamp"])
+        writer.writeheader()
+        writer.writerows(data)
+    print(f"✅ Report written: {OUTPUT_CSV} ({len(data)} rows)")
+
+# === MAIN ===
+if __name__ == "__main__":
+    print("🔍 Extracting Jenkins → Artifactory credential mapping...")
+    jenkins_user_map = generate_jenkins_user_map()
+
+    print(f"📦 Found {len(jenkins_user_map)} Jenkins Artifactory users")
+
+    print("📥 Fetching Artifactory artifact download records...")
+    records = fetch_artifact_downloads(jenkins_user_map)
+
+    write_csv(records)
