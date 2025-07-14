@@ -1,0 +1,115 @@
+import requests
+from requests.auth import HTTPBasicAuth
+import time
+import csv
+from datetime import datetime, timedelta, timezone
+from openpyxl import Workbook
+
+# === CONFIGURATION ===
+ARTIFACTORY_URL = "https://your-domain/artifactory"  # No trailing slash
+API_USER = "your-username"
+API_TOKEN = "your-api-token"
+REPOS = ["korcomponents", "korcomponents-dev"]
+
+DAYS_LIMIT = 365
+OUTPUT_CSV = "artifactory_download_report_last_365_days.csv"
+OUTPUT_XLSX = "artifactory_download_report_last_365_days.xlsx"
+
+auth = HTTPBasicAuth(API_USER, API_TOKEN)
+cutoff_date = datetime.now(timezone.utc) - timedelta(days=DAYS_LIMIT)
+cutoff_epoch = int(cutoff_date.timestamp() * 1000)  # in ms
+
+# === Fetch artifacts modified in the last 365 days ===
+def get_recent_artifacts(repo):
+    aql = (
+        f'items.find({{"repo":"{repo}","type":"file",'
+        f'"modified":{{"$gt":{cutoff_epoch}}}}})'
+        f'.include("repo","path","name","modified")'
+    )
+    url = f"{ARTIFACTORY_URL}/api/search/aql"
+    response = requests.post(url, data=aql, auth=auth)
+
+    if response.status_code != 200:
+        print(f"\n❌ Failed AQL for {repo}: {response.status_code}")
+        print(f"🧾 Response: {response.text}")
+        return []
+
+    return response.json().get("results", [])
+
+# === Get download stats for one artifact ===
+def get_download_stats(repo, path, name):
+    artifact_path = f"{repo}/{path}/{name}".strip("/")
+    url = f"{ARTIFACTORY_URL}/api/storage/{artifact_path}?stats"
+    response = requests.get(url, auth=auth)
+
+    if response.status_code == 200:
+        return response.json().get("downloadStats", [])
+    return []
+
+# === Export to CSV and Excel ===
+def export_report(data):
+    headers = ["Repository", "Artifact Path", "Downloaded By", "Download Count", "Last Downloaded", "Jenkins Job?"]
+
+    # CSV
+    with open(OUTPUT_CSV, mode="w", newline='', encoding='utf-8') as file:
+        writer = csv.writer(file)
+        writer.writerow(headers)
+        for row in data:
+            writer.writerow(row)
+
+    # Excel
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Download Report"
+    ws.append(headers)
+    for row in data:
+        ws.append(row)
+    wb.save(OUTPUT_XLSX)
+
+    print(f"\n✅ CSV saved to: {OUTPUT_CSV}")
+    print(f"✅ Excel saved to: {OUTPUT_XLSX}")
+
+# === Main Function ===
+def generate_download_report():
+    full_report = []
+
+    for repo in REPOS:
+        print(f"\n🔍 Scanning repo: {repo} (modified in last {DAYS_LIMIT} days)")
+        artifacts = get_recent_artifacts(repo)
+        print(f"📦 Found {len(artifacts)} artifacts in {repo}")
+
+        for idx, art in enumerate(artifacts):
+            path = art['path']
+            name = art['name']
+            full_path = f"{repo}/{path}/{name}"
+            stats = get_download_stats(repo, path, name)
+
+            for stat in stats:
+                user = stat.get("user", "unknown")
+                count = stat.get("count", 0)
+                last_downloaded = stat.get("lastDownloaded", "")
+
+                if not last_downloaded:
+                    continue
+
+                try:
+                    dt = datetime.strptime(last_downloaded, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+                    if dt < cutoff_date:
+                        continue
+                except Exception as e:
+                    print(f"⚠️ Date error on {full_path}: {e}")
+                    continue
+
+                jenkins_flag = "Yes" if "jenkins" in user.lower() or "ci" in user.lower() else ""
+                full_report.append([repo, full_path, user, count, last_downloaded, jenkins_flag])
+
+            if idx % 50 == 0:
+                print(f"⏳ Processed {idx}/{len(artifacts)} in {repo}...")
+
+            time.sleep(0.1)
+
+    export_report(full_report)
+
+# === RUN ===
+if __name__ == "__main__":
+    generate_download_report()
