@@ -1,0 +1,6 @@
+curl -u your_user:your_api_key -X POST "http://your-artifactory-url/artifactory/api/search/aql" -d '
+items.find({
+  "stat.downloaded_by": {"$ne": null}
+}).include("repo", "path", "name", "stat.downloaded_by", "stat.downloaded", "type")
+.sort({"$desc": ["stat.downloaded"]})
+'
