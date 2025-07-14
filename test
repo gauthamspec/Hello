@@ -1,0 +1,41 @@
+#!/bin/bash
+
+
+JENKINS_WORKSPACE_DIR="/data/jenkins_home/workspace"
+
+JAR_PREFIXES=(
+  "kws"
+  "jcibw"
+  "jci"
+  "korframework"
+  "korparametertables"
+  "korconfigurator"
+  "korlogger"
+  "kordecrypt"
+)
+
+printf ' - %s-*.jar\n' "${JAR_PREFIXES[@]}"
+echo "--------------------------------------------------"
+
+for job_dir in "$JENKINS_WORKSPACE_DIR"/*; do
+  if [ -d "$job_dir" ]; then
+    job_name=$(basename "$job_dir")
+    found_any=false
+
+    for prefix in "${JAR_PREFIXES[@]}"; do
+      matches=$(find "$job_dir" -type f -name "${prefix}-*.jar" 2>/dev/null)
+
+      if [ -n "$matches" ]; then
+        if [ "$found_any" = false ]; then
+          echo "✅ Job: $job_name"
+          found_any=true
+        fi
+        echo "$matches"
+      fi
+    done
+
+    if [ "$found_any" = true ]; then
+      echo "--------------------------------------------------"
+    fi
+  fi
+done
