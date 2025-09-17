@@ -1,0 +1,78 @@
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.issue.Issue
+import com.atlassian.jira.issue.link.IssueLink
+import com.atlassian.jira.event.issue.IssueEvent
+
+def issue = event.issue as Issue
+def issueTypeId = issue.issueType?.id
+def customFieldManager = ComponentAccessor.customFieldManager
+def issueService = ComponentAccessor.issueService
+def authCtx = ComponentAccessor.jiraAuthenticationContext
+def currentUser = authCtx.loggedInUser
+def issueLinkManager = ComponentAccessor.issueLinkManager
+
+// --- CONFIG ---
+def subtaskTriggerTypeId = "10201"             // only run for this subtask type
+def subtaskCreateTypeId = "10003"              // new subtasks will be this type
+def artifactField = customFieldManager.getCustomFieldObjects(issue).find { it.name == "Artifacts" }
+def lineNumberField = customFieldManager.getCustomFieldObject("customfield_10235")
+// -------------
+
+// Only run for subtasks of type 10201
+if (issueTypeId != subtaskTriggerTypeId) {
+    return
+}
+
+// Only run if Artifacts field was updated
+def wasArtifactsUpdated = event?.getChangeLog()?.getRelated("ChildChangeItem")?.any { it.field == artifactField?.name }
+if (!wasArtifactsUpdated) {
+    return
+}
+
+// Get parent of the updated subtask
+def parent = issue.parentObject as Issue
+if (!parent) {
+    return
+}
+
+// Find linked parent issues of this parent
+def linkedParents = issueLinkManager.getOutwardLinks(parent.id)*.destinationObject.findAll { it }
+
+linkedParents.each { linkedParent ->
+
+    // --- First subtask with k261 ---
+    def params1 = issueService.newIssueInputParameters()
+    params1.with {
+        setProjectId(linkedParent.projectId)
+        setIssueTypeId(subtaskCreateTypeId)
+        setReporterId(currentUser?.name)
+        setSummary("Auto Subtask - k261")
+        setDescription("Auto-created subtask from listener")
+        setParentId(linkedParent.id)
+        addCustomFieldValue(lineNumberField.idAsLong, "k261")
+    }
+    def createVal1 = issueService.validateSubTaskCreate(currentUser, params1)
+    if (createVal1.isValid()) {
+        issueService.create(currentUser, createVal1)
+    } else {
+        log.warn("Failed to create k261 subtask under ${linkedParent.key}: ${createVal1.errorCollection}")
+    }
+
+    // --- Second subtask with s140 ---
+    def params2 = issueService.newIssueInputParameters()
+    params2.with {
+        setProjectId(linkedParent.projectId)
+        setIssueTypeId(subtaskCreateTypeId)
+        setReporterId(currentUser?.name)
+        setSummary("Auto Subtask - s140")
+        setDescription("Auto-created subtask from listener")
+        setParentId(linkedParent.id)
+        addCustomFieldValue(lineNumberField.idAsLong, "s140")
+    }
+    def createVal2 = issueService.validateSubTaskCreate(currentUser, params2)
+    if (createVal2.isValid()) {
+        issueService.create(currentUser, createVal2)
+    } else {
+        log.warn("Failed to create s140 subtask under ${linkedParent.key}: ${createVal2.errorCollection}")
+    }
+}
