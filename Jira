@@ -1,0 +1,63 @@
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.issue.Issue
+import com.atlassian.jira.event.issue.IssueEvent
+
+def issue = event.issue as Issue
+def issueTypeId = issue.issueType?.id
+def issueService = ComponentAccessor.issueService
+def issueLinkManager = ComponentAccessor.issueLinkManager
+def user = ComponentAccessor.jiraAuthenticationContext.loggedInUser
+
+// Only run for subtasks with type id 10201
+if (issueTypeId != "10201") {
+    return
+}
+
+// Check if Artifacts field was updated
+def change = event?.changeLog?.getRelated("ChildChangeItem").find {
+    it.field == "Artifacts"  // make sure this matches the custom field name exactly
+}
+if (!change) {
+    return
+}
+
+// Find parent of the subtask
+def parentIssue = issue.parentObject
+if (!parentIssue) {
+    return
+}
+
+// Collect linked parent issues (both inward and outward links)
+def linkedParents = issueLinkManager.getOutwardLinks(parentIssue.id)*.destinationObject +
+                    issueLinkManager.getInwardLinks(parentIssue.id)*.sourceObject
+if (!linkedParents) {
+    return
+}
+
+// Hardcoded subtask issue type id
+def subTaskIssueTypeId = "10003"
+
+linkedParents.each { linkedParent ->
+    (1..2).each { idx ->
+        def issueInputParams = issueService.newIssueInputParameters()
+        issueInputParams.with {
+            setProjectId(linkedParent.projectObject.id)
+            setIssueTypeId(subTaskIssueTypeId)
+            setSummary("Auto-created subtask #${idx} for ${linkedParent.key}")
+            setReporterId(user.name)
+            setAssigneeId(user.name)
+        }
+
+        def validationResult = issueService.validateSubTaskCreate(user, linkedParent.id, issueInputParams)
+        if (validationResult.isValid()) {
+            def result = issueService.create(user, validationResult)
+            if (result.isValid()) {
+                log.debug("Created subtask ${result.issue.key} under ${linkedParent.key}")
+            } else {
+                log.warn("Failed to create subtask under ${linkedParent.key}: ${result.errorCollection}")
+            }
+        } else {
+            log.warn("Validation failed for creating subtask under ${linkedParent.key}: ${validationResult.errorCollection}")
+        }
+    }
+}
