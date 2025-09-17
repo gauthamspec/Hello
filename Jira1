@@ -1,0 +1,111 @@
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.issue.Issue
+import com.atlassian.jira.event.issue.IssueEvent
+
+def issue = event.issue as Issue
+def issueTypeId = issue.issueType?.id
+def issueService = ComponentAccessor.issueService
+def issueLinkManager = ComponentAccessor.issueLinkManager
+def customFieldManager = ComponentAccessor.customFieldManager
+def user = ComponentAccessor.jiraAuthenticationContext.loggedInUser
+
+// Only run for subtasks with type id 10201
+if (issueTypeId != "10201") {
+    return
+}
+
+// Check if Artifacts field was updated
+def change = event?.changeLog?.getRelated("ChildChangeItem").find {
+    it.field == "Artifacts" // adjust name if necessary
+}
+if (!change) {
+    return
+}
+
+// Find parent of the subtask
+def parentIssue = issue.parentObject
+if (!parentIssue) {
+    return
+}
+
+// Collect linked parent issues (both inward and outward links)
+def linkedParents = issueLinkManager.getOutwardLinks(parentIssue.id)*.destinationObject +
+                    issueLinkManager.getInwardLinks(parentIssue.id)*.sourceObject
+
+// Filter out subtasks (cannot be parents)
+linkedParents = linkedParents.findAll { !it.issueType.isSubTask() }
+if (!linkedParents) {
+    return
+}
+
+// Hardcoded subtask issue type id
+def subTaskIssueTypeId = "10003"
+
+// Grab required custom field values from the triggering subtask
+def categoryCf = customFieldManager.getCustomFieldObject("customfield_10105")
+def segmentCf  = customFieldManager.getCustomFieldObject("customfield_10351")
+def lineCf     = customFieldManager.getCustomFieldObject("customfield_10235")
+
+def categoryValue = issue.getCustomFieldValue(categoryCf)
+def segmentValue  = issue.getCustomFieldValue(segmentCf)
+
+linkedParents.each { linkedParent ->
+
+    // First subtask with custom_10235 = K261
+    def issueInputParams1 = issueService.newIssueInputParameters()
+    issueInputParams1.with {
+        setProjectId(linkedParent.projectObject.id)
+        setIssueTypeId(subTaskIssueTypeId)
+        setSummary("Auto-created subtask (K261) for ${linkedParent.key}")
+        setReporterId(user.name)
+        setAssigneeId(user.name)
+
+        // Copy mandatory fields
+        if (categoryValue) addCustomFieldValue(categoryCf.idAsLong, categoryValue.toString())
+        if (segmentValue) addCustomFieldValue(segmentCf.idAsLong, segmentValue.toString())
+
+        // Set Line Number field
+        addCustomFieldValue(lineCf.idAsLong, "K261")
+    }
+
+    def validationResult1 = issueService.validateSubTaskCreate(user, linkedParent.id, issueInputParams1)
+    if (validationResult1.isValid()) {
+        def result = issueService.create(user, validationResult1)
+        if (result.isValid()) {
+            log.debug("Created subtask ${result.issue.key} (Line=K261) under ${linkedParent.key}")
+        } else {
+            log.warn("Failed to create subtask (Line=K261) under ${linkedParent.key}: ${result.errorCollection}")
+        }
+    } else {
+        log.warn("Validation failed for subtask (Line=K261) under ${linkedParent.key}: ${validationResult1.errorCollection}")
+    }
+
+    // Second subtask with custom_10235 = S140
+    def issueInputParams2 = issueService.newIssueInputParameters()
+    issueInputParams2.with {
+        setProjectId(linkedParent.projectObject.id)
+        setIssueTypeId(subTaskIssueTypeId)
+        setSummary("Auto-created subtask (S140) for ${linkedParent.key}")
+        setReporterId(user.name)
+        setAssigneeId(user.name)
+
+        // Copy mandatory fields
+        if (categoryValue) addCustomFieldValue(categoryCf.idAsLong, categoryValue.toString())
+        if (segmentValue) addCustomFieldValue(segmentCf.idAsLong, segmentValue.toString())
+
+        // Set Line Number field
+        addCustomFieldValue(lineCf.idAsLong, "S140")
+    }
+
+    def validationResult2 = issueService.validateSubTaskCreate(user, linkedParent.id, issueInputParams2)
+    if (validationResult2.isValid()) {
+        def result = issueService.create(user, validationResult2)
+        if (result.isValid()) {
+            log.debug("Created subtask ${result.issue.key} (Line=S140) under ${linkedParent.key}")
+        } else {
+            log.warn("Failed to create subtask (Line=S140) under ${linkedParent.key}: ${result.errorCollection}")
+        }
+    } else {
+        log.warn("Validation failed for subtask (Line=S140) under ${linkedParent.key}: ${validationResult2.errorCollection}")
+    }
+}
