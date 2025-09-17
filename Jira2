@@ -1,0 +1,73 @@
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.issue.Issue
+import com.atlassian.jira.issue.IssueInputParameters
+import com.atlassian.jira.issue.IssueManager
+import com.atlassian.jira.issue.IssueService
+import com.atlassian.jira.issue.link.IssueLink
+import com.atlassian.jira.user.ApplicationUser
+
+def issue = event.issue as Issue
+def change = event?.getChangeLog()?.getRelated("ChildChangeItem")?.find { it.field == "Artifacts" }
+
+if (!change) {
+    // only run if Artifacts field is updated
+    return
+}
+
+def issueManager = ComponentAccessor.issueManager
+def issueService = ComponentAccessor.issueService
+def authContext = ComponentAccessor.jiraAuthenticationContext
+def user = authContext.loggedInUser
+def customFieldManager = ComponentAccessor.customFieldManager
+
+// Required custom fields
+def cfCategory = customFieldManager.getCustomFieldObject("customfield_10105")
+def cfSegment  = customFieldManager.getCustomFieldObject("customfield_10351")
+def cfLine     = customFieldManager.getCustomFieldObject("customfield_10235")
+
+def parentIssue = issue.parentObject
+if (!parentIssue) return
+
+// Find all linked parent tickets of the parent
+def linkedParents = ComponentAccessor.issueLinkManager.getInwardLinks(parentIssue.id)*.sourceObject
+if (!linkedParents) return
+
+linkedParents.each { linkedParent ->
+    ["k261", "s140"].each { lineValue ->
+        def issueInputParams = issueService.newIssueInputParameters()
+        issueInputParams.with {
+            setProjectId(linkedParent.projectId)
+            setIssueTypeId("10003") // your subtask type ID
+            setSummary("Auto-created subtask (${lineValue}) for ${linkedParent.key}")
+            setReporterId(user.name)
+            setAssigneeId(user.name)
+
+            // Copy mandatory fields from triggering subtask
+            if (cfCategory) {
+                def val = issue.getCustomFieldValue(cfCategory)
+                if (val) addCustomFieldValue(cfCategory.idAsLong, val.toString())
+            }
+            if (cfSegment) {
+                def val = issue.getCustomFieldValue(cfSegment)
+                if (val) addCustomFieldValue(cfSegment.idAsLong, val.toString())
+            }
+
+            // Set line field with k261 or s140
+            if (cfLine) {
+                addCustomFieldValue(cfLine.idAsLong, lineValue)
+            }
+
+            setSkipScreenCheck(true)
+        }
+
+        def createValidationResult = issueService.validateSubTaskCreate(user, linkedParent.id, issueInputParams)
+        if (createValidationResult.isValid()) {
+            def result = issueService.create(user, createValidationResult)
+            if (!result.isValid()) {
+                log.error("Failed to create subtask under ${linkedParent.key} for line ${lineValue}: ${result.errorCollection}")
+            }
+        } else {
+            log.error("Validation failed for subtask under ${linkedParent.key}: ${createValidationResult.errorCollection}")
+        }
+    }
+}
