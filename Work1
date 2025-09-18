@@ -1,0 +1,155 @@
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.bc.issue.IssueService
+import com.atlassian.jira.issue.link.IssueLinkManager
+
+def issue = event.issue
+def changeLog = event?.getChangeLog()
+def customFieldManager = ComponentAccessor.getCustomFieldManager()
+def optionsManager = ComponentAccessor.getOptionsManager()
+def issueService = ComponentAccessor.getIssueService()
+def user = ComponentAccessor.getJiraAuthenticationContext().getLoggedInUser()
+def issueLinkManager = ComponentAccessor.getIssueLinkManager()
+
+// Defaults (labels) to use when source has no value
+def defaultsByField = [
+    "customfield_11600": "Defect",   // Issue Category label
+    "customfield_11601": "Normal",   // Issue Seriousness label (you had Normal1 earlier; adjust if needed)
+    "customfield_10242": "Success",  // Release Status label
+    "customfield_10235": "K261"      // Line Number label
+]
+
+// helper: get optionId (string) for a field's option label in the context of targetIssue
+def getOptionIdForIssue = { cf, targetIssue, label ->
+    if (!cf || !targetIssue || !label) return null
+    def cfg = cf.getRelevantConfig(targetIssue)
+    if (!cfg) return null
+    def opts = optionsManager.getOptions(cfg)
+    def opt = opts.find { it.value == label }
+    return opt ? opt.optionId.toString() : null
+}
+
+// 1) only act on subtasks
+if (!issue?.isSubTask()) {
+    log.debug("Listener skip: not a subtask")
+    return
+}
+
+// 2) check Artifacts change
+def artifactsField = customFieldManager.getCustomFieldObjectByName("Artifacts")
+if (!artifactsField) {
+    log.warn("Artifacts custom field not found; listener exiting")
+    return
+}
+def artifactsChange = changeLog?.getRelated("ChildChangeItem")?.find { it.field == artifactsField.name }
+if (!artifactsChange) {
+    log.debug("Artifacts not changed; listener exiting")
+    return
+}
+
+// 3) parent
+def parentIssue = issue.getParentObject()
+if (!parentIssue) {
+    log.warn("Parent issue not found; exiting")
+    return
+}
+
+// 4) linked issues
+def linkedIssues = issueLinkManager.getOutwardLinks(parentIssue.id)*.destinationObject +
+                   issueLinkManager.getInwardLinks(parentIssue.id)*.sourceObject
+if (!linkedIssues) {
+    log.debug("No linked issues for parent ${parentIssue.key}; nothing to do")
+    return
+}
+
+// fields to ensure (IDs)
+def requiredFieldIds = ["customfield_11600","customfield_11601","customfield_10242","customfield_10235"]
+
+linkedIssues.each { linkedIssue ->
+
+    // skip if target is a subtask (Jira won't allow subtask under subtask)
+    if (linkedIssue.isSubTask()) {
+        log.warn("Skipping ${linkedIssue.key}: it's already a sub-task")
+        return
+    }
+
+    def issueInputParameters = issueService.newIssueInputParameters()
+    issueInputParameters.with {
+        setProjectId(linkedIssue.projectId)
+        setIssueTypeId("10003") // your Sub-task type id (string)
+        setSummary("Subtask for Artifacts: ${issue.getCustomFieldValue(artifactsField) ?: 'N/A'}")
+        setReporterId(user.key)
+        setAssigneeId(user.key)
+        if (issue.priority) {
+            setPriorityId(issue.priority.id)
+        }
+    }
+
+    def missing = []
+
+    // for each required dropdown field:
+    requiredFieldIds.each { fId ->
+        def cf = customFieldManager.getCustomFieldObject(fId)
+        if (!cf) {
+            log.warn("Custom field ${fId} not found; will treat as missing for ${linkedIssue.key}")
+            missing << fId
+            return
+        }
+
+        // get label from source (subtask) or parent (prefer subtask)
+        def srcVal = issue.getCustomFieldValue(cf) ?: parentIssue.getCustomFieldValue(cf)
+        def label = null
+        if (srcVal) {
+            // if it's an Option object, get its label; otherwise .toString()
+            try {
+                label = (srcVal.respondsTo('getValue')) ? srcVal.value : srcVal.toString()
+            } catch (e) {
+                label = srcVal.toString()
+            }
+        }
+
+        // attempt to find corresponding option in linkedIssue's config by label
+        def optionId = label ? getOptionIdForIssue(cf, linkedIssue, label) : null
+
+        // if not found, try the default label for that field (mapped per defaultsByField)
+        if (!optionId) {
+            def defaultLabel = defaultsByField[fId]
+            optionId = defaultLabel ? getOptionIdForIssue(cf, linkedIssue, defaultLabel) : null
+            if (optionId) {
+                log.debug("Using default '${defaultLabel}' (option ${optionId}) for ${cf.name} on ${linkedIssue.key}")
+            }
+        } else {
+            log.debug("Mapped source label '${label}' to option ${optionId} for ${cf.name} on ${linkedIssue.key}")
+        }
+
+        if (optionId) {
+            issueInputParameters.addCustomFieldValue(cf.idAsLong.toString(), optionId)
+        } else {
+            log.warn("Could not resolve an option for field ${cf.name} on ${linkedIssue.key}; labelUsed='${label}'; will skip creation")
+            missing << cf.name
+        }
+    }
+
+    if (!missing.isEmpty()) {
+        log.warn("Skipping creation under ${linkedIssue.key} because required dropdown options missing: ${missing}")
+        return
+    }
+
+    // ensure description never empty
+    if (!issueInputParameters.description) {
+        def desc = issue.description ?: parentIssue.description ?: "Auto-generated subtask for ${linkedIssue.key}"
+        issueInputParameters.setDescription(desc)
+    }
+
+    // validate/create
+    def validationResult = issueService.validateSubTaskCreate(user, linkedIssue.id, issueInputParameters)
+    if (validationResult.isValid()) {
+        def result = issueService.create(user, validationResult)
+        if (!result.isValid()) {
+            log.warn("Failed to create subtask under ${linkedIssue.key}: ${result.errorCollection}")
+        } else {
+            log.info("Created subtask under ${linkedIssue.key}")
+        }
+    } else {
+        log.warn("Validation failed for creation under ${linkedIssue.key}: ${validationResult.errorCollection}")
+    }
+}
