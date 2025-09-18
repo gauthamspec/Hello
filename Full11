@@ -1,0 +1,138 @@
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.bc.issue.IssueService
+import com.atlassian.jira.issue.link.IssueLinkManager
+
+def issue = event.issue
+def changeLog = event?.getChangeLog()
+def customFieldManager = ComponentAccessor.getCustomFieldManager()
+def optionsManager = ComponentAccessor.getOptionsManager()
+def issueService = ComponentAccessor.getIssueService()
+def user = ComponentAccessor.getJiraAuthenticationContext().getLoggedInUser()
+def issueLinkManager = ComponentAccessor.getIssueLinkManager()
+
+// Default labels (⚠️ must exactly match the option values in Jira)
+def defaultsByField = [
+    "customfield_11600": "Defect",   // Issue Category
+    "customfield_11601": "Normal",   // Issue Seriousness
+    "customfield_10242": "Success",  // Release Status
+    "customfield_10235": "K261"      // Line Number
+]
+
+// Helper: resolve optionId in context of a target issue
+def getOptionIdForIssue = { cf, targetIssue, label ->
+    if (!cf || !targetIssue || !label) return null
+    def cfg = cf.getRelevantConfig(targetIssue)
+    if (!cfg) return null
+    def opts = optionsManager.getOptions(cfg)
+    def opt = opts.find { it.value == label }
+    return opt ? opt.optionId.toString() : null
+}
+
+// 1. Only act on subtasks
+if (!issue?.isSubTask()) return
+
+// 2. Detect if "Artifacts" field was updated
+def artifactsField = customFieldManager.getCustomFieldObjectByName("Artifacts")
+if (!artifactsField) return
+def artifactsChange = changeLog?.getRelated("ChildChangeItem")?.find { it.field == artifactsField.name }
+if (!artifactsChange) return
+
+// 3. Get parent of the subtask
+def parentIssue = issue.getParentObject()
+if (!parentIssue) return
+
+// 4. Get all linked issues of the parent
+def linkedIssues = issueLinkManager.getOutwardLinks(parentIssue.id)*.destinationObject +
+                   issueLinkManager.getInwardLinks(parentIssue.id)*.sourceObject
+if (!linkedIssues) return
+
+// 5. Required dropdown field IDs
+def requiredFieldIds = ["customfield_11600","customfield_11601","customfield_10242","customfield_10235"]
+
+linkedIssues.each { linkedIssue ->
+
+    // Skip if linked issue is already a sub-task
+    if (linkedIssue.isSubTask()) {
+        log.warn("⏩ Skipping ${linkedIssue.key}: already a sub-task")
+        return
+    }
+
+    def issueInputParameters = issueService.newIssueInputParameters()
+    issueInputParameters.with {
+        setProjectId(linkedIssue.projectId)
+        setIssueTypeId("10003") // Sub-task type
+        setSummary("Subtask for Artifacts: ${issue.getCustomFieldValue(artifactsField) ?: 'N/A'}")
+        setReporterId(user.key)
+        setAssigneeId(user.key)
+        if (issue.priority) {
+            setPriorityId(issue.priority.id)
+        }
+    }
+
+    def missing = []
+
+    // Loop through required dropdowns
+    requiredFieldIds.each { fId ->
+        def cf = customFieldManager.getCustomFieldObject(fId)
+        if (!cf) {
+            log.warn("⚠️ Field ${fId} not found")
+            missing << fId
+            return
+        }
+
+        // Source value: subtask or parent
+        def srcVal = issue.getCustomFieldValue(cf) ?: parentIssue.getCustomFieldValue(cf)
+        def label = null
+        if (srcVal) {
+            try {
+                label = (srcVal.respondsTo('getValue')) ? srcVal.value : srcVal.toString()
+            } catch (e) {
+                label = srcVal.toString()
+            }
+        }
+        log.warn("🔎 Field ${cf.name} on ${linkedIssue.key}: source label='${label}'")
+
+        // Try source label first
+        def optionId = label ? getOptionIdForIssue(cf, linkedIssue, label) : null
+
+        // Fallback: default label
+        if (!optionId) {
+            def defaultLabel = defaultsByField[fId]
+            log.warn("   ↳ No match for '${label}', trying default='${defaultLabel}'")
+            optionId = defaultLabel ? getOptionIdForIssue(cf, linkedIssue, defaultLabel) : null
+        }
+
+        if (optionId) {
+            log.warn("   ✅ Resolved ${cf.name} on ${linkedIssue.key} to optionId=${optionId}")
+            issueInputParameters.addCustomFieldValue(cf.idAsLong.toString(), optionId)
+        } else {
+            log.warn("   ❌ Could not resolve ${cf.name} for ${linkedIssue.key}")
+            missing << cf.name
+        }
+    }
+
+    // Skip creation if any required field missing
+    if (!missing.isEmpty()) {
+        log.warn("⏩ Skipping creation under ${linkedIssue.key}, missing required fields: ${missing}")
+        return
+    }
+
+    // Ensure description not empty
+    if (!issueInputParameters.description) {
+        def desc = issue.description ?: parentIssue.description ?: "Auto-generated subtask for ${linkedIssue.key}"
+        issueInputParameters.setDescription(desc)
+    }
+
+    // Validate & create
+    def validationResult = issueService.validateSubTaskCreate(user, linkedIssue.id, issueInputParameters)
+    if (validationResult.isValid()) {
+        def result = issueService.create(user, validationResult)
+        if (!result.isValid()) {
+            log.warn("❌ Failed to create subtask under ${linkedIssue.key}: ${result.errorCollection}")
+        } else {
+            log.warn("🎉 Created subtask under ${linkedIssue.key}")
+        }
+    } else {
+        log.warn("⚠️ Validation failed for ${linkedIssue.key}: ${validationResult.errorCollection}")
+    }
+}
