@@ -1,0 +1,108 @@
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.bc.issue.IssueService
+import com.atlassian.jira.issue.link.IssueLinkManager
+
+def issue = event.issue
+def changeLog = event?.getChangeLog()
+def customFieldManager = ComponentAccessor.getCustomFieldManager()
+def optionsManager = ComponentAccessor.getOptionsManager()
+def issueService = ComponentAccessor.getIssueService()
+def user = ComponentAccessor.getJiraAuthenticationContext().getLoggedInUser()
+def issueLinkManager = ComponentAccessor.getIssueLinkManager()
+
+// Helper method to resolve dropdown option ID by text
+def getOptionId = { cf, valueText ->
+    if (!cf) return null
+    def config = cf.getRelevantConfig(issue)
+    def options = optionsManager.getOptions(config)
+    def option = options.find { it.value == valueText }
+    return option ? option.optionId.toString() : null
+}
+
+// 1. Only act on subtasks
+if (!issue.isSubTask()) return
+
+// 2. Detect if "Artifacts" field was updated
+def artifactsField = customFieldManager.getCustomFieldObjectByName("Artifacts")
+if (!artifactsField) return
+
+def artifactsChange = changeLog?.getRelated("ChildChangeItem")?.find { it.field == artifactsField.name }
+if (!artifactsChange) return
+
+// 3. Get parent of the subtask
+def parentIssue = issue.getParentObject()
+if (!parentIssue) return
+
+// 4. Get all linked issues of the parent
+def linkedIssues = issueLinkManager.getOutwardLinks(parentIssue.id)*.destinationObject +
+                   issueLinkManager.getInwardLinks(parentIssue.id)*.sourceObject
+
+if (!linkedIssues) return
+
+// 5. Loop through linked issues and create subtasks
+linkedIssues.each { linkedIssue ->
+
+    // Skip if linked issue is already a sub-task
+    if (linkedIssue.isSubTask()) {
+        log.warn("⏩ Skipping ${linkedIssue.key} because it is already a sub-task")
+        return
+    }
+
+    def issueInputParameters = issueService.newIssueInputParameters()
+    issueInputParameters.with {
+        setProjectId(linkedIssue.projectId)
+        setIssueTypeId("10003")   // Sub-task type
+        setSummary("Subtask for Artifacts: ${issue.getCustomFieldValue(artifactsField) ?: 'N/A'}")
+        setReporterId(user.key)
+        setAssigneeId(user.key)
+        if (issue.priority) {
+            setPriorityId(issue.priority.id)
+        }
+    }
+
+    // ✅ Required dropdowns + defaults
+    def requiredDropdowns = [
+        "customfield_11600": "Defect",   // Issue Category
+        "customfield_11601": "Normal1",  // Issue Seriousness
+        "customfield_10242": "Success",  // Release Status
+        "customfield_10235": "K261"      // Line Number
+    ]
+
+    requiredDropdowns.each { fieldId, defaultVal ->
+        def cf = customFieldManager.getCustomFieldObject(fieldId)
+        if (cf) {
+            def value = issue.getCustomFieldValue(cf) ?: parentIssue.getCustomFieldValue(cf)
+
+            if (value) {
+                // Already set → get optionId if it's an option
+                def optionId = (value.respondsTo("optionId")) ? value.optionId.toString() : value.toString()
+                issueInputParameters.addCustomFieldValue(cf.idAsLong.toString(), optionId)
+            } else {
+                // Use default fallback
+                def optionId = getOptionId(cf, defaultVal)
+                if (optionId) {
+                    issueInputParameters.addCustomFieldValue(cf.idAsLong.toString(), optionId)
+                } else {
+                    log.warn("⚠️ Could not find option '${defaultVal}' for field ${cf.name}")
+                }
+            }
+        }
+    }
+
+    // ✅ Ensure description is never empty
+    if (!issueInputParameters.description) {
+        def desc = issue.description ?: parentIssue.description ?: "Auto-generated subtask for ${linkedIssue.key}"
+        issueInputParameters.setDescription(desc)
+    }
+
+    // Validate and create subtask
+    def validationResult = issueService.validateSubTaskCreate(user, linkedIssue.id, issueInputParameters)
+    if (validationResult.isValid()) {
+        def result = issueService.create(user, validationResult)
+        if (!result.isValid()) {
+            log.warn("❌ Failed to create subtask under ${linkedIssue.key}: ${result.errorCollection}")
+        }
+    } else {
+        log.warn("⚠️ Validation failed for subtask under ${linkedIssue.key}: ${validationResult.errorCollection}")
+    }
+}
