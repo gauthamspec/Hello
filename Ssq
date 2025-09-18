@@ -1,0 +1,30 @@
+import com.atlassian.jira.component.ComponentAccessor
+
+def customFieldManager = ComponentAccessor.getCustomFieldManager()
+def optionsManager = ComponentAccessor.getOptionsManager()
+
+def fieldIds = [
+    "customfield_11600", // Issue Category
+    "customfield_11601", // Issue Seriousness
+    "customfield_10242", // Release Status
+    "customfield_10235"  // Line Number
+]
+
+fieldIds.each { fieldId ->
+    def cf = customFieldManager.getCustomFieldObject(fieldId)
+    if (cf) {
+        def configs = cf.getConfigurationSchemes()
+        configs.each { scheme ->
+            def config = scheme.oneAndOnlyConfig
+            if (config) {
+                def options = optionsManager.getOptions(config)
+                log.warn("Options for ${cf.name}:")
+                options.each { opt ->
+                    log.warn(" - ${opt.optionId} : ${opt.value}")
+                }
+            }
+        }
+    } else {
+        log.warn("⚠️ Field ${fieldId} not found")
+    }
+}
