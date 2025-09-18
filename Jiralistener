@@ -1,0 +1,74 @@
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.issue.Issue
+import com.atlassian.jira.event.issue.IssueEvent
+
+def issue = (event as IssueEvent).getIssue() as Issue
+def issueTypeId = issue.issueType?.id
+def customFieldManager = ComponentAccessor.getCustomFieldManager()
+def issueService = ComponentAccessor.getIssueService()
+def authCtx = ComponentAccessor.getJiraAuthenticationContext()
+def currentUser = authCtx.getLoggedInUser()
+def issueLinkManager = ComponentAccessor.getIssueLinkManager()
+
+// --- CONFIG ---
+def subtaskTriggerTypeId = "10201"   // only run for this subtask type
+def subtaskCreateTypeId = "10003"    // new subtasks will be this type
+def artifactField = customFieldManager.getCustomFieldObjects(issue).find { it.name == "Artifacts" }
+def lineNumberField = customFieldManager.getCustomFieldObject("customfield_10235")
+// -------------
+
+// Only run for subtasks of type 10201
+if (issueTypeId != subtaskTriggerTypeId) {
+    return
+}
+
+// Only run if Artifacts field was updated
+def changeItems = event.getChangeLog()?.getRelated("ChildChangeItem")
+def wasArtifactsUpdated = changeItems?.any { it.field == artifactField?.name }
+if (!wasArtifactsUpdated) {
+    return
+}
+
+// Get parent of the updated subtask
+def parent = issue.getParentObject() as Issue
+if (!parent) {
+    return
+}
+
+// Find linked parent issues of this parent
+def linkedParents = issueLinkManager.getOutwardLinks(parent.id)*.destinationObject.findAll { it }
+
+linkedParents.each { linkedParent ->
+    // 🔎 Log info about the linked parent
+    log.warn("Linked parent candidate: ${linkedParent.key} " +
+             "(Project=${linkedParent.projectObject.key}, " +
+             "Type=${linkedParent.issueType.name}, " +
+             "isSubtask=${linkedParent.issueType.isSubTask()}, " +
+             "Subtask type requested=${subtaskCreateTypeId})")
+
+    [["k261","Auto Subtask - k261"], ["s140","Auto Subtask - s140"]].each { cfg ->
+        def (lineValue, summaryText) = cfg
+
+        def params = issueService.newIssueInputParameters()
+        params.with {
+            setProjectId(linkedParent.projectId)
+            setIssueTypeId(subtaskCreateTypeId)
+            setReporterId(currentUser?.name)
+            setSummary("${summaryText} (from ${issue.key}: ${issue.summary})")
+            setDescription("Auto-created subtask when Artifacts updated")
+            addCustomFieldValue(lineNumberField.idAsLong, lineValue)
+        }
+
+        def validation = issueService.validateSubTaskCreate(currentUser, linkedParent.id, params)
+        if (validation.isValid()) {
+            def result = issueService.create(currentUser, validation)
+            if (result.isValid()) {
+                log.warn("✅ Created subtask ${result.issue.key} under ${linkedParent.key} with Line Number ${lineValue}")
+            } else {
+                log.warn("❌ Failed to create subtask under ${linkedParent.key} with Line Number ${lineValue}: ${result.errorCollection}")
+            }
+        } else {
+            log.warn("❌ Validation failed for subtask under ${linkedParent.key} with Line Number ${lineValue}: ${validation.errorCollection}")
+        }
+    }
+}
