@@ -1,0 +1,90 @@
+{
+  "name": "RULE_NAME - create subtasks under linked parents when artifacts changed",
+  "description": "When a sub-task's artifacts field changes, create corresponding sub-tasks under each linked parent issue (with idempotency).",
+  "enabled": true,
+  "trigger": {
+    "type": "jira.issue.updated",
+    "configuration": {
+      "issueTypes": ["Sub-task"],
+      "sendAuditEvents": true
+    }
+  },
+  "conditions": [
+    {
+      "type": "issue.fields.condition",
+      "configuration": {
+        "field": "issuetype",
+        "comparator": "equals",
+        "value": "Sub-task"
+      }
+    },
+    {
+      "type": "advanced.condition",
+      "configuration": {
+        "expression": "{{#changelog.items}}{{#if(equals(field,'artifacts'))}}true{{/}}{{/changelog.items}}",
+        "errorMessage": "artifacts field was not changed in changelog"
+      }
+    }
+  ],
+  "branches": [
+    {
+      "type": "branch.parent",
+      "name": "Parent branch",
+      "components": [
+        {
+          "type": "condition.advanced",
+          "configuration": {
+            "expression": "{{issue.fields.issuelinks.size}} > 0",
+            "errorMessage": "Parent has no linked issues"
+          }
+        },
+        {
+          "type": "branch.linkedissues",
+          "name": "Linked Issues branch",
+          "configuration": {
+            "linkDirection": "both"
+            /* optionally: "linkTypes": ["blocks","is parent of"] */
+          },
+          "components": [
+            {
+              "type": "lookupIssues",
+              "configuration": {
+                "query": "parent = {{issue.key}} AND summary ~ \"Auto: from {{triggerIssue.key}}\"",
+                "maxResults": 50
+              }
+            },
+            {
+              "type": "condition.advanced",
+              "configuration": {
+                "expression": "{{lookupIssues.size}} == 0",
+                "errorMessage": "Subtask already exists under this linked issue"
+              }
+            },
+            {
+              "type": "createIssue",
+              "configuration": {
+                "project": "{{issue.fields.project.key}}",
+                "issueType": "{{#if SUBTASK_ISSUETYPE_ID}}{{SUBTASK_ISSUETYPE_ID}}{{else}}Sub-task{{/if}}",
+                "fields": {
+                  "summary": "Auto: from {{triggerIssue.key}} - {{triggerIssue.fields.summary}}",
+                  "description": "Auto-created because artifacts changed in {{triggerIssue.key}} ({{triggerIssue.fields.summary}})",
+                  "parent": {
+                    "key": "{{issue.key}}"
+                  }
+                }
+              }
+            },
+            {
+              "type": "comment.issue",
+              "configuration": {
+                "issueKey": "{{triggerIssue.key}}",
+                "message": "Created sub-task under linked issue {{issue.key}}: {{createdIssues.first.key}}"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "postActions": []
+}
