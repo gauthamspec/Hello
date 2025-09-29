@@ -1,0 +1,217 @@
+// ScriptRunner listener: create subtasks under linked parent issues when artifacts field changes
+// Replace placeholders below with your values:
+//   ARTIFACT_CUSTOMFIELD_ID = "customfield_16400"
+//   SUBTASK_ISSUETYPE_ID = "10003"   // numeric ID of your sub-task issuetype
+
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.event.issue.IssueEvent
+import com.atlassian.jira.issue.IssueInputParameters
+import com.atlassian.jira.issue.Issue
+import com.atlassian.jira.issue.changehistory.ChangeHistoryManager
+import com.atlassian.jira.issue.link.IssueLinkManager
+import com.atlassian.jira.bc.issue.IssueService
+import com.atlassian.jira.user.ApplicationUser
+import com.atlassian.jira.bc.issue.search.SearchService
+import com.atlassian.jira.web.bean.PagerFilter
+import com.atlassian.jira.issue.search.SearchQuery
+import com.atlassian.jira.issue.IssueManager
+import com.atlassian.jira.issue.IssueInputParametersImpl
+import org.apache.log4j.Logger
+import org.apache.log4j.Level
+
+// ====== CONFIG - edit these ======
+final String ARTIFACT_CUSTOMFIELD_ID = "customfield_16400"  // replace with your artifacts custom field id
+final String SUBTASK_ISSUETYPE_ID = "10003"                 // replace with your sub-task issuetype id (numeric)
+// If you prefer using an explicit service account as the actor, set ACTOR_USERNAME to username (else null to use currentUser)
+final String ACTOR_USERNAME = null
+// ================================
+
+Logger log = Logger.getLogger("com.yourcompany.autosubtask")
+log.setLevel(Level.INFO)
+
+def event = event as IssueEvent
+if (!event) {
+    log.warn("No event object; exiting")
+    return
+}
+
+// Only proceed for update events
+def eventTypeId = event.getEventTypeId()
+if (!eventTypeId) {
+    log.info("No eventTypeId; skipping")
+    return
+}
+
+def issue = event.getIssue() as Issue
+if (!issue) {
+    log.warn("No issue in event; skipping")
+    return
+}
+
+// Check if the issue is a sub-task
+def issuetype = issue.getIssueType()
+if (!issuetype || !issuetype.isSubTask()) {
+    log.info("Issue ${issue.key} is not a sub-task; skipping")
+    return
+}
+
+// Check whether the artifacts custom field changed in this update
+// We'll consult the change history manager and see if the last change for that field is recent and equals to this event's update time
+def changeHistoryManager = ComponentAccessor.getChangeHistoryManager()
+def changeItems = changeHistoryManager.getChangeItemsForField(issue, ARTIFACT_CUSTOMFIELD_ID) // may return empty list
+
+if (!changeItems || changeItems.isEmpty()) {
+    log.info("No change history found for field ${ARTIFACT_CUSTOMFIELD_ID} on ${issue.key}; skipping")
+    return
+}
+
+// The last change item for this field
+def lastChange = changeItems.last()  // safe because we've checked not empty
+
+// Optionally check timestamp: only proceed if lastChange was within small time window of now (not strictly necessary)
+def now = System.currentTimeMillis()
+def whenMillis = lastChange.getTime().getTime()
+def ageMs = now - whenMillis
+// If very old ( > 5 minutes ), may not be caused by this event; still proceed or choose to skip
+if (ageMs > 5 * 60 * 1000) {
+    // still proceed, but log
+    log.info("Artifacts field last changed ${ageMs/1000} sec ago for ${issue.key} - still proceeding (you can tune time check)")
+}
+
+// Another check: ensure the lastChange was indeed a change in this update - best-effort (ScriptRunner doesn't provide direct changelog items on event easily)
+log.info("Detected artifacts change for ${issue.key}: from='${lastChange.getFromString()}' to='${lastChange.getToString()}' at ${lastChange.getTime()}")
+
+// Find the parent issue key
+def parent = issue.getParentObject()
+if (!parent) {
+    log.warn("No parent found for sub-task ${issue.key}; skipping")
+    return
+}
+def parentKey = parent.getKey()
+log.info("Parent for ${issue.key} is ${parentKey}")
+
+// Fetch parent's linked issues
+def issueLinkManager = ComponentAccessor.getIssueLinkManager()
+def linkedKeys = []
+issueLinkManager.getOutwardLinks(parent.id).each { link ->
+    if (link?.outwardIssue) linkedKeys << link.outwardIssue.key
+}
+issueLinkManager.getInwardLinks(parent.id).each { link ->
+    if (link?.inwardIssue) linkedKeys << link.inwardIssue.key
+}
+
+// Remove duplicates
+linkedKeys = linkedKeys.unique()
+if (!linkedKeys) {
+    log.info("Parent ${parentKey} has no linked issues; nothing to do")
+    return
+}
+log.info("Parent ${parentKey} linked issues: ${linkedKeys}")
+
+// Prepare services to create issues
+def userManager = ComponentAccessor.userManager
+ApplicationUser actorUser = null
+if (ACTOR_USERNAME) {
+    actorUser = userManager.getUserByName(ACTOR_USERNAME) // older API
+    if (!actorUser) actorUser = userManager.getUserByKey(ACTOR_USERNAME)
+    if (!actorUser) {
+        log.warn("Configured ACTOR_USERNAME '${ACTOR_USERNAME}' not found - falling back to event user")
+    }
+}
+
+if (!actorUser) {
+    // Use the event user or the admin
+    def eventUser = event.getUser()
+    actorUser = eventUser ?: ComponentAccessor.jiraAuthenticationContext.loggedInUser
+}
+if (!actorUser) {
+    log.error("No actor user available to create issues; aborting")
+    return
+}
+
+def issueService = ComponentAccessor.getIssueService()
+def projectManager = ComponentAccessor.getProjectManager()
+def issueManager = ComponentAccessor.issueManager
+def searchService = ComponentAccessor.getComponent(SearchService)
+
+// Build the subtask summary template
+def triggerSummary = issue.getSummary() ?: ""
+def autoSummary = "Auto: from ${issue.key} - ${triggerSummary}"
+def description = "Auto-created because artifacts changed in ${issue.key}"
+
+// For idempotency: define a function to check if a subtask with same summary already exists under a given parent
+def subtaskExistsUnderParent = { String parentKey, String summaryToCheck ->
+    def jql = "parent = \"${parentKey}\" AND summary ~ \"${summaryToCheck.replaceAll('"','') }\""
+    def user = actorUser
+    def parseResult = searchService.parseQuery(user, jql)
+    if (!parseResult.valid) {
+        log.warn("Invalid JQL for idempotency check: ${jql}")
+        return false
+    }
+    // run search with small page
+    def results = searchService.search(user, parseResult.query, PagerFilter.getUnlimitedFilter())
+    def total = results.getTotal()
+    return total > 0
+}
+
+// For each linked issue, create a subtask if not already present
+linkedKeys.each { linkedKey ->
+    try {
+        def linkedIssue = issueManager.getIssueByCurrentKey(linkedKey)
+        if (!linkedIssue) {
+            log.warn("Linked issue ${linkedKey} not found; skipping")
+            return
+        }
+        def linkedProj = linkedIssue.getProjectObject()
+        if (!linkedProj) {
+            log.warn("Linked issue ${linkedKey} has no project; skipping")
+            return
+        }
+
+        // idempotency
+        if (subtaskExistsUnderParent(linkedKey, autoSummary)) {
+            log.info("Subtask with summary similar to '${autoSummary}' already exists under ${linkedKey}. Skipping.")
+            return
+        }
+
+        // prepare issue input
+        IssueInputParameters input = issueService.newIssueInputParameters()
+        input.setProjectId(linkedProj.id)
+        input.setIssueTypeId(SUBTASK_ISSUETYPE_ID)
+        input.setSummary(autoSummary)
+        input.setDescription(description)
+        // set parent by key
+        input.setParentId(linkedIssue.id) // parent must be an issue id for some implementations; if API requires map, adjust
+        // optionally set reporter/assignee/labels etc: input.setAssigneeId(actorUser?.getName())
+
+        // create the issue
+        def createValidation = issueService.validateSubTaskCreate(actorUser, linkedProj.id as Long, input)
+        if (!createValidation.isValid()) {
+            // sometimes validateSubTaskCreate may not be available; fallback to createIssue
+            log.warn("Validation for creating subtask under ${linkedKey} failed: ${createValidation.errorCollection?.getErrors()}")
+            // Try generic create
+            def defaultCreateValidation = issueService.validateCreate(actorUser, input)
+            if (!defaultCreateValidation.isValid()) {
+                log.error("Generic validateCreate failed for ${linkedKey}: ${defaultCreateValidation.errorCollection?.getErrors()}")
+                return
+            }
+            def createResult = issueService.create(actorUser, defaultCreateValidation)
+            if (!createResult.isValid()) {
+                log.error("Create failed for ${linkedKey}: ${createResult.errorCollection?.getErrors()}")
+                return
+            }
+            log.info("Created subtask ${createResult.issue?.key} under ${linkedKey} via fallback create.")
+        } else {
+            def createResult = issueService.create(actorUser, createValidation)
+            if (!createResult.isValid()) {
+                log.error("Create result invalid for ${linkedKey}: ${createResult.errorCollection?.getErrors()}")
+                return
+            }
+            log.info("Created subtask ${createResult.issue?.key} under ${linkedKey}")
+        }
+    } catch (Exception e) {
+        log.error("Error while creating subtask under ${linkedKey}: ${e.message}", e)
+    }
+}
+
+log.info("Listener execution completed for trigger issue ${issue.key}")
