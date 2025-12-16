@@ -1,0 +1,282 @@
+<%@ page import="com.atlassian.jira.component.ComponentAccessor" %>
+<%@ page import="com.atlassian.jira.project.Project" %>
+<%@ page import="com.atlassian.jira.project.version.Version" %>
+<%@ page contentType="text/html;charset=UTF-8" language="java" %>
+
+<html>
+<head>
+<title>Version Manager</title>
+
+<!-- jQuery -->
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<link rel="stylesheet" href="https://code.jquery.com/ui/1.13.2/themes/base/jquery-ui.css">
+
+<style>
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto;
+  margin: 20px;
+  color: #172B4D;
+}
+
+h1 {
+  font-size: 20px;
+  margin-bottom: 16px;
+}
+
+/* Header form */
+.add-form input {
+  padding: 6px;
+  margin-right: 6px;
+  font-size: 13px;
+}
+.add-form button {
+  padding: 6px 12px;
+}
+
+/* Release list */
+.release-list {
+  border-top: 1px solid #DFE1E6;
+}
+
+.release-row {
+  display: flex;
+  align-items: center;
+  padding: 12px 8px;
+  border-bottom: 1px solid #DFE1E6;
+}
+
+.release-row:hover {
+  background: #F4F5F7;
+}
+
+/* Columns */
+.col-version { width: 20%; }
+.col-status { width: 12%; }
+.col-progress { width: 20%; }
+.col-dates { width: 18%; font-size:12px; color:#6B778C; }
+.col-desc { width: 22%; color:#42526E; }
+.col-actions { width: 5%; text-align:right; }
+
+/* Status pills */
+.status {
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.status.released {
+  background: #E3FCEF;
+  color: #006644;
+}
+.status.unreleased {
+  background: #DEEBFF;
+  color: #0747A6;
+}
+
+/* Progress bar */
+.progress-bar {
+  background: #DFE1E6;
+  height: 6px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.progress-fill {
+  background: #0052CC;
+  height: 6px;
+  border-radius: 3px;
+  width: 0%;
+}
+
+/* Actions */
+.actions-menu {
+  position: relative;
+}
+.actions-menu button {
+  background: none;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+}
+.actions-dropdown {
+  display: none;
+  position: absolute;
+  right: 0;
+  background: #FFF;
+  border: 1px solid #DFE1E6;
+  box-shadow: 0 2px 6px rgba(0,0,0,.2);
+  z-index: 100;
+}
+.actions-dropdown button {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  background: #FFF;
+  text-align: left;
+}
+.actions-dropdown button:hover {
+  background: #F4F5F7;
+}
+.actions-menu:hover .actions-dropdown {
+  display: block;
+}
+
+/* Tooltip */
+.progress-tooltip {
+  display:none;
+  position:absolute;
+  background:#FFF;
+  border:1px solid #DFE1E6;
+  padding:10px;
+  width:200px;
+  box-shadow:0 2px 6px rgba(0,0,0,.2);
+  z-index:200;
+}
+.badge {
+  background:#0052CC;
+  color:#FFF;
+  border-radius:8px;
+  padding:2px 6px;
+  font-size:11px;
+}
+</style>
+</head>
+
+<body>
+
+<%
+String projectKey = request.getParameter("projectKey");
+if(projectKey == null) projectKey = "KORDOBA";
+
+Project project = ComponentAccessor.getProjectManager().getProjectObjByKey(projectKey);
+String baseUrl = ComponentAccessor.getApplicationProperties().getString("jira.baseurl");
+%>
+
+<h1>Releases – <%= projectKey %></h1>
+
+<div class="add-form">
+  <input id="vName" placeholder="Version name"/>
+  <input id="vDesc" placeholder="Description"/>
+  <button onclick="createVersion()">Create</button>
+</div>
+
+<div class="release-list" id="releaseList">
+<% if(project != null) {
+for(Version v : project.getVersions()) { %>
+
+<div class="release-row" data-id="<%=v.getId()%>" data-name="<%=v.getName()%>">
+  <div class="col-version">
+    <strong><%=v.getName()%></strong>
+  </div>
+
+  <div class="col-status">
+    <span class="status <%=v.isReleased()?"released":"unreleased"%>">
+      <%=v.isReleased()?"RELEASED":"UNRELEASED"%>
+    </span>
+  </div>
+
+  <div class="col-progress">
+    <div class="progress-bar">
+      <div class="progress-fill"></div>
+    </div>
+    <div class="progress-tooltip">
+      <div class="issue-count">Loading…</div>
+      <div>Done <span class="badge done-count">0</span></div>
+      <div class="view-link" style="color:#0052CC;cursor:pointer;">View issues →</div>
+    </div>
+  </div>
+
+  <div class="col-dates">
+    <div>Start: <%=v.getStartDate()!=null?v.getStartDate():"—"%></div>
+    <div>Release: <%=v.getReleaseDate()!=null?v.getReleaseDate():"—"%></div>
+  </div>
+
+  <div class="col-desc">
+    <%=v.getDescription()!=null?v.getDescription():""%>
+  </div>
+
+  <div class="col-actions">
+    <div class="actions-menu">
+      <button>⋯</button>
+      <div class="actions-dropdown">
+        <button onclick="toggleRelease(<%=v.getId()%>, <%=v.isReleased()%>)">
+          <%=v.isReleased()?"Unrelease":"Release"%>
+        </button>
+        <button onclick="deleteVersion(<%=v.getId()%>)">Delete</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<% }} %>
+</div>
+
+<script>
+const baseUrl = '<%=baseUrl%>';
+const projectKey = '<%=projectKey%>';
+
+/* Create */
+function createVersion(){
+  $.ajax({
+    url: baseUrl + '/rest/api/2/version',
+    type:'POST',
+    contentType:'application/json',
+    data: JSON.stringify({
+      name: $('#vName').val(),
+      project: projectKey,
+      description: $('#vDesc').val()
+    }),
+    success:()=>location.reload()
+  });
+}
+
+/* Release toggle */
+function toggleRelease(id,released){
+  $.ajax({
+    url: baseUrl+'/rest/api/2/version/'+id,
+    type:'PUT',
+    contentType:'application/json',
+    data: JSON.stringify({released:!released}),
+    success:()=>location.reload()
+  });
+}
+
+/* Delete */
+function deleteVersion(id){
+  if(!confirm('Delete version?')) return;
+  $.ajax({
+    url: baseUrl+'/rest/api/2/version/'+id,
+    type:'DELETE',
+    success:()=>location.reload()
+  });
+}
+
+/* Progress */
+$('.release-row').each(function(){
+  const row=$(this);
+  const name=row.data('name');
+  $.get(baseUrl+'/rest/api/2/search?jql=project='+projectKey+' AND fixVersion="'+name+'"',function(d){
+    const done=d.issues.filter(i=>i.fields.resolution).length;
+    const pct=d.total?Math.round(done/d.total*100):0;
+    row.find('.progress-fill').css('width',pct+'%');
+    row.find('.issue-count').text(d.total+' issues');
+    row.find('.done-count').text(done);
+  });
+});
+
+/* Tooltip */
+$('.progress-bar').click(function(e){
+  e.stopPropagation();
+  $('.progress-tooltip').hide();
+  $(this).next().show();
+});
+$(document).click(()=>$('.progress-tooltip').hide());
+
+$('.view-link').click(function(){
+  const v=$(this).closest('.release-row').data('name');
+  window.open(baseUrl+'/issues/?jql=project='+projectKey+' AND fixVersion="'+v+'"');
+});
+</script>
+
+</body>
+</html>
