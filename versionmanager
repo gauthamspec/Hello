@@ -1,0 +1,369 @@
+<%@ page import="com.atlassian.jira.component.ComponentAccessor" %>
+<%@ page import="com.atlassian.jira.project.Project" %>
+<%@ page import="com.atlassian.jira.project.version.Version" %>
+<%@ page contentType="text/html;charset=UTF-8" language="java" %>
+<html>
+<head>
+    <title>Version Manager</title>
+    <!-- jQuery and jQuery UI -->
+    <link rel="stylesheet" href="https://code.jquery.com/ui/1.13.2/themes/base/jquery-ui.css">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://code.jquery.com/ui/1.13.2/jquery-ui.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+        th { background-color: #f4f4f4; }
+        .actions-menu { position: relative; display: inline-block; }
+        .actions-dropdown { display: none; position: absolute; background: #fff; border: 1px solid #ccc; z-index: 100; }
+        .actions-dropdown button { display: block; width: 100%; text-align: left; padding: 5px; border: none; background: #fff; cursor: pointer; }
+        .actions-dropdown button:hover { background: #f4f4f4; }
+        .actions-menu:hover .actions-dropdown { display: block; }
+        input, textarea { margin-bottom: 8px; padding: 4px; font-size: 12px; }
+        #versionName, #startDate, #releaseDate, #description { width: 180px; }
+        button { padding: 5px 10px; cursor: pointer; font-size: 12px; }
+
+        /* Loader */
+        .loader {
+            width:16px; height:16px;
+            border:2px solid #ccc;
+            border-top:2px solid #4caf50;
+            border-radius:50%;
+            animation: spin 1s linear infinite;
+            display:inline-block;
+        }
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+
+        /* Toast */
+        .toast {
+            position:fixed; bottom:20px; right:20px;
+            background:#333; color:#fff; padding:10px 15px;
+            border-radius:4px; font-size:14px;
+            opacity:0.9; z-index:9999;
+            display:none;
+        }
+
+        /* Progress Bar */
+        .progress-container { position: relative; display: inline-block; }
+        .progress-bar { background:#eee; width:80px; height:8px; border-radius:4px; cursor:pointer; }
+        .progress-fill { background:#4caf50; height:8px; border-radius:4px; width:0%; transition: width 0.4s ease; }
+        .progress-tooltip {
+            display:none; position:absolute; top:20px; left:0;
+            background:#fff; border:1px solid #ccc; padding:10px;
+            font-size:13px; box-shadow:0 2px 6px rgba(0,0,0,0.2);
+            z-index:200; width:200px; border-radius:4px;
+        }
+        .badge { background:#4caf50; color:#fff; border-radius:10px; padding:2px 6px; font-size:11px; margin-left:5px; }
+    </style>
+</head>
+<body>
+<h1>Version Manager</h1>
+<%
+    String projectKey = request.getParameter("projectKey");
+    if (projectKey == null) {
+        projectKey = "KORDOBA"; // Default project key
+    }
+    Project project = ComponentAccessor.getProjectManager().getProjectObjByKey(projectKey);
+    String baseUrl = ComponentAccessor.getApplicationProperties().getString("jira.baseurl");
+%>
+<div id="addForm">
+    <input type="text" id="versionName" placeholder="Version name" maxlength="20" />
+    <input type="text" id="startDate" class="datepicker" placeholder="Start date" />
+    <input type="text" id="releaseDate" class="datepicker" placeholder="Release date" />
+    <input type="text" id="description" placeholder="Description" maxlength="50" />
+    <button onclick="createVersion()">Create</button>
+</div>
+<table id="versionTable">
+    <thead>
+        <tr>
+            <th>Version</th><th>Status</th><th>Progress</th><th>Start date</th><th>Release date</th><th>Description</th><th>Actions</th>
+        </tr>
+    </thead>
+    <tbody id="versionBody">
+        <% if (project != null) {
+            java.util.Collection<Version> versions = project.getVersions();
+            for (Version v : versions) { %>
+            <tr data-id="<%= v.getId() %>" data-name="<%= v.getName() %>">
+                <td><%= v.getName() %></td>
+                <td><%= v.isReleased() ? "RELEASED" : "UNRELEASED" %></td>
+                <td>
+                    <div class="progress-container">
+                        <div class="progress-bar"><div class="progress-fill"></div></div>
+                        <div class="progress-tooltip" data-version="<%= v.getName() %>">
+                            <strong>Version:</strong> <%= v.getName() %><br>
+                            <span class="issue-count">Loading...</span><br>
+                            <div>Done <span class="done-count badge">0</span></div>
+                            <div class="link-text" style="color:#0052cc;text-decoration:underline;cursor:pointer;">View All Issues →</div>
+                        </div>
+                    </div>
+                </td>
+                <td><%= v.getStartDate() != null ? v.getStartDate().toString() : "" %></td>
+                <td><%= v.getReleaseDate() != null ? v.getReleaseDate().toString() : "" %></td>
+                <td><%= v.getDescription() != null ? v.getDescription() : "" %></td>
+                <td>
+                    <div class="actions-menu">
+                        <button>⋮</button>
+                        <div class="actions-dropdown">
+                            <button onclick="toggleRelease(<%= v.getId() %>, <%= v.isReleased() %>)"><%= v.isReleased() ? "Unrelease" : "Release" %></button>
+                            <button onclick="deleteVersion(<%= v.getId() %>)">Delete</button>
+                            <button onclick="editVersion(<%= v.getId() %>)">Edit</button>
+                        </div>
+                    </div>
+                </td>
+            </tr>
+        <% } } else { %>
+            <tr><td colspan="7">Project not found for key: <%= projectKey %></td></tr>
+        <% } %>
+    </tbody>
+</table>
+
+<!-- Edit Modal -->
+<div id="editModal" title="Edit Version" style="display:none;">
+    <input type="hidden" id="editVersionId" />
+    <label>Name:</label>
+    <input type="text" id="editName" maxlength="20" />
+    <label>Start Date:</label>
+    <input type="text" id="editStartDate" class="datepicker" />
+    <label>Release Date:</label>
+    <input type="text" id="editReleaseDate" class="datepicker" />
+    <label>Description:</label>
+    <textarea id="editDescription" maxlength="50"></textarea>
+    <br/>
+    <button onclick="saveEdit()">Save</button>
+    <button onclick="$('#editModal').dialog('close')">Cancel</button>
+</div>
+
+<script>
+$(function() {
+    $(".datepicker").datepicker({ dateFormat: "yy-mm-dd" });
+    $("#editModal").dialog({ autoOpen: false, modal: true, width: 350 });
+});
+
+const baseUrl = '<%= baseUrl %>';
+const projectKey = '<%= projectKey %>';
+
+// Toast utility
+function showToast(message) {
+    const toast = $('<div class="toast">'+message+'</div>').appendTo('body');
+    toast.fadeIn().delay(2000).fadeOut(function(){ $(this).remove(); });
+}
+
+// Loader utility
+function showLoader(versionId) {
+    const row = $('tr[data-id="'+versionId+'"] td:last');
+    row.append('<span class="loader" id="loader-'+versionId+'"></span>');
+}
+function hideLoader(versionId) {
+    $('#loader-'+versionId).remove();
+}
+
+// Create Version
+function createVersion() {
+    const name = $('#versionName').val().trim();
+    const startDate = $('#startDate').val() || null;
+    const releaseDate = $('#releaseDate').val() || null;
+    const description = $('#description').val().trim();
+
+    if (!name) {
+        showToast('Version name is required!');
+        return;
+    }
+
+    const payload = {
+        name: name,
+        project: projectKey,
+        startDate: startDate,
+        releaseDate: releaseDate,
+        description: description
+    };
+
+    showToast('Creating version...');
+    $.ajax({
+        url: baseUrl + '/rest/api/2/version',
+        type: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify(payload),
+        success: function(data) {
+            const newRow = `
+                <tr data-id="${data.id}" data-name="${data.name}">
+                    <td>${data.name}</td>
+                    <td>UNRELEASED</td>
+                    <td>
+                        <div class="progress-container">
+                            <div class="progress-bar"><div class="progress-fill"></div></div>
+                            <div class="progress-tooltip" data-version="${data.name}">
+                                <strong>Version:</strong> ${data.name}<br>
+                                <span class="issue-count">Loading...</span><br>
+                                <div>Done <span class="done-count badge">0</span></div>
+                                <div class="link-text" style="color:#0052cc;text-decoration:underline;cursor:pointer;">View All Issues →</div>
+                            </div>
+                        </div>
+                    </td>
+                    <td>${startDate || ''}</td>
+                    <td>${releaseDate || ''}</td>
+                    <td>${description || ''}</td>
+                    <td>
+                        <div class="actions-menu">
+                            <button>⋮</button>
+                            <div class="actions-dropdown">
+                                <button onclick="toggleRelease(${data.id}, false)">Release</button>
+                                <button onclick="deleteVersion(${data.id})">Delete</button>
+                                <button onclick="editVersion(${data.id})">Edit</button>
+                            </div>
+                        </div>
+                    </td>
+                </tr>
+            `;
+            $('#versionBody').append(newRow);
+            $('#versionName, #startDate, #releaseDate, #description').val('');
+            calculateProgress(data.name, data.id, true);
+            showToast('Version created successfully!');
+            setTimeout(function() {
+                location.reload(); // Refresh the page after 1 second
+            }, 1000);
+
+        },
+        error: function() {
+            showToast('Failed to create version.');
+        }
+    });
+}
+
+// Release / Unrelease
+function toggleRelease(versionId, isReleased) {
+    const newStatus = !isReleased;
+    showLoader(versionId);
+    $.ajax({
+        url: baseUrl + '/rest/api/2/version/' + versionId,
+        type: 'PUT',
+        contentType: 'application/json',
+        data: JSON.stringify({ released: newStatus }),
+        success: function() {
+            updateRowStatus(versionId, newStatus);
+            hideLoader(versionId);
+            showToast('Version ' + (newStatus ? 'released' : 'unreleased') + ' successfully!');
+        },
+        error: function() {
+            hideLoader(versionId);
+            showToast('Failed to update version status.');
+        }
+    });
+}
+
+function updateRowStatus(versionId, released) {
+    const row = $('tr[data-id="'+versionId+'"]');
+    row.find('td:nth-child(2)').text(released ? 'RELEASED' : 'UNRELEASED');
+    row.find('.actions-dropdown button:first').text(released ? 'Unrelease' : 'Release');
+}
+
+// Delete
+function deleteVersion(versionId) {
+    if(!confirm('Are you sure you want to delete this version?')) return;
+    showLoader(versionId);
+    $.ajax({
+        url: baseUrl + '/rest/api/2/version/' + versionId,
+        type: 'DELETE',
+        success: function() {
+            $('tr[data-id="'+versionId+'"]').fadeOut(function(){ $(this).remove(); });
+            hideLoader(versionId);
+            showToast('Version deleted successfully!');
+        },
+        error: function() {
+            hideLoader(versionId);
+            showToast('Failed to delete version.');
+        }
+    });
+}
+
+// Edit
+function editVersion(versionId) {
+    const row = $('tr[data-id="'+versionId+'"]');
+    $('#editVersionId').val(versionId);
+    $('#editName').val(row.find('td:first').text());
+    $('#editStartDate').val(row.find('td:nth-child(4)').text());
+    $('#editReleaseDate').val(row.find('td:nth-child(5)').text());
+    $('#editDescription').val(row.find('td:nth-child(6)').text());
+    $('#editModal').dialog('open');
+}
+
+function saveEdit() {
+    const versionId = $('#editVersionId').val();
+    const payload = {
+        name: $('#editName').val(),
+        startDate: $('#editStartDate').val() || null,
+        releaseDate: $('#editReleaseDate').val() || null,
+        description: $('#editDescription').val()
+    };
+    showLoader(versionId);
+    $.ajax({
+        url: baseUrl + '/rest/api/2/version/' + versionId,
+        type: 'PUT',
+        contentType: 'application/json',
+        data: JSON.stringify(payload),
+        success: function() {
+            const row = $('tr[data-id="'+versionId+'"]');
+            row.find('td:first').text(payload.name);
+            row.find('td:nth-child(4)').text(payload.startDate || '');
+            row.find('td:nth-child(5)').text(payload.releaseDate || '');
+            row.find('td:nth-child(6)').text(payload.description || '');
+            hideLoader(versionId);
+            $('#editModal').dialog('close');
+            showToast('Version updated successfully!');
+        },
+        error: function() {
+            hideLoader(versionId);
+            showToast('Failed to update version.');
+        }
+    });
+}
+
+// Progress calculation on page load
+$(document).ready(function(){
+    $('#versionBody tr[data-id]').each(function(){
+        const versionName = $(this).attr('data-name');
+        const rowId = $(this).attr('data-id');
+        calculateProgress(versionName, rowId, true);
+    });
+});
+
+// Calculate progress and update tooltip
+function calculateProgress(versionName, rowId, updateTooltip=false) {
+    $.ajax({
+        url: baseUrl + '/rest/api/2/search?jql=project=' + projectKey + ' AND fixVersion="' + versionName + '"',
+        type: 'GET',
+        success: function(data) {
+            const total = data.total;
+            const resolved = data.issues.filter(issue => issue.fields.resolution).length;
+            const percent = total > 0 ? Math.round((resolved / total) * 100) : 0;
+
+            const row = $('tr[data-id="'+rowId+'"]');
+            row.find('.progress-fill').css('width', percent + '%');
+
+            if(updateTooltip) {
+                row.find('.issue-count').text(total + ' issue' + (total !== 1 ? 's' : '') + ' in total.');
+                row.find('.done-count').text(resolved);
+            }
+        }
+    });
+}
+
+// Tooltip click logic
+$(document).on('click', '.progress-bar', function(e) {
+    e.stopPropagation();
+    const tooltip = $(this).siblings('.progress-tooltip');
+    $('.progress-tooltip').not(tooltip).hide();
+    tooltip.toggle();
+});
+
+$(document).on('click', function() {
+    $('.progress-tooltip').hide();
+});
+
+$(document).on('click', '.progress-tooltip .link-text', function(e) {
+    e.stopPropagation();
+    const versionName = $(this).closest('.progress-tooltip').data('version');
+    window.open(baseUrl + '/issues/?jql=project=' + projectKey + ' AND fixVersion="' + versionName + '"', '_blank');
+});
+</script>
+</body>
+</html>
